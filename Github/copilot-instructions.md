@@ -76,7 +76,8 @@ TrackFX/
 | 7 | FireEffect | ✅ Noise scroll + seeds coerentes + LUT alpha + glow |
 | 8 | OrganicWarpEffect | ✅ Warp multi-octave reativo à velocidade |
 | 9 | RibbonWarpEffect | ✅ Dual-layer smear + wave + RGB split + bloom + CRT scanlines |
-| h | HUDBehindEffect | ✅ Sprint 13 — HUD futurista + segmentação de corpo |
+| h | HUDBehindEffect | ✅ Sprint 14 — HUD futurista + scanner reativo + motion + body segmentation |
+| r | PalmRingEffect | ✅ Sprint 15 — anel energético ancorado na palma com EMA + glow |
 | 0 | Nenhum | ✅ Frame limpo |
 
 ### Stack técnico:
@@ -319,15 +320,59 @@ HUD_LAYER_ALPHA    = (0.20, 0.42)  # alpha (layer 0 fundo, layer 1 médio)
 ```
 
 **Performance Sprint 14:** 9ms avg → ~111 FPS de efeito puro (720p, sem mão)
-**Objetivo:** novo efeito combinando glitch reativo + wave distortion em 2 passes
 
-| # | Task | Entregável visual |
-|---|------|-------------------|
-| 14.1 | ROI expandida, RGB shift variável por frame (sinusoide) | Glitch pulsante, não nervoso |
-| 14.2 | Scanlines com opacidade que pulsa no tempo | Scanlines que respiram |
-| 14.3 | Block glitch reativo ao centróide | Blocos que emanam da mão |
-| 14.4 | Wave distortion aplicada APÓS o glitch (2 passes) | Reality distortion sobre glitch |
-| 14.5 | Intensidade total escala com velocidade da mão | Glitch tranquilo→explosivo |
+---
+
+### ✅ Sprint 15 — PalmRingEffect: Anel Energético na Palma
+
+**Objetivo:** Objeto gráfico ancorado na palma — nova família de efeitos hand-overlay.
+
+**Ancoragem:**
+- Centro da palma = média de `lm[0, 5, 9, 13, 17]` (pulso + bases dos 4 dedos)
+- Raio base = distância `lm[0] → lm[9]` × `PALM_OBJECT_SCALE`
+- Suavização EMA independente para `cx`, `cy` e `radius`
+- Fade in/out automático ao detectar/perder a mão (`PALM_FADE_FRAMES`)
+
+**Estrutura visual do anel (3 layers):**
+- Layer 1: 4 arcos de 70° giratórios (`cv2.ellipse`)
+- Layer 2: 12 segmentos radiais curtos, rotação oposta (metade da velocidade)
+- Layer 3: anel interno pulsante (raio modula em seno, 2.7 rad/s)
+- Ponto central âncora
+
+**Pipeline de renderização (ROI-only — crítico para performance):**
+1. Calcula ROI = bounding box do anel + padding do glow
+2. Canvas pré-alocado do tamanho da ROI (não do frame inteiro)
+3. Desenha anel com coordenadas relativas à ROI
+4. `GaussianBlur` apenas no canvas ROI
+5. `cv2.addWeighted` canvas + glow dentro da ROI
+6. `cv2.add(frame[roi], canvas, dst=frame[roi])` — in-place, sem frame.copy()
+
+**Performance:** 47ms → 2.1ms avg (22× speedup) via ROI + in-place blend
+
+**Tecla:** `r` (também `R`)
+
+**Params em `config.py`:**
+```python
+ACTIVE_PALM_OBJECT         = "ring"
+PALM_OBJECT_SCALE          = 1.15
+PALM_OBJECT_SMOOTHING      = 0.80
+PALM_OBJECT_ROTATION_SPEED = 1.6
+PALM_OBJECT_ALPHA          = 0.92
+PALM_OBJECT_GLOW           = 0.60
+PALM_OBJECT_GLOW_BLUR      = 17
+PALM_RING_COLOR            = (180, 220, 255)
+PALM_RING_ACCENT           = (140, 255, 200)
+PALM_FADE_FRAMES           = 10
+```
+
+**Próximas sprints planejadas:**
+- Sprint 16: PalmSymbolEffect — símbolo geométrico/tech alternativo
+- Sprint 17: Gesto de troca (pinch polegar+indicador com debounce)
+
+---
+
+### Sprint 16 — PalmSymbolEffect (FUTURA)
+**Objetivo:** símbolo mágico/tech desenhado na palma, alternável com o anel
 
 ---
 

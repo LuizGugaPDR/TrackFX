@@ -1290,3 +1290,194 @@ class HUDBehindEffect:
             cv2.copyTo(frame, self._seg_mask_bin, self._result_buf)
 
         return self._result_buf
+
+
+# ---------------------------------------------------------------------------
+# PalmRingEffect â€” Sprint 15: anel energetico ancorado na palma
+#
+# Ancoragem:
+#   Centro da palma = media de lm[0, 5, 9, 13, 17] (pulso + bases dos dedos)
+#   Raio base       = distancia lm[0] -> lm[9] * PALM_OBJECT_SCALE
+#   Orientacao      = angulo do vetor lm[0] -> lm[9] (pulso -> base do medio)
+#   Suavizacao EMA  = PALM_OBJECT_SMOOTHING (posicao + raio independentes)
+#
+# Estrutura visual do anel:
+#   Layer 1 â€” anel externo:  arcos parciais giratorios (cv2.ellipse)
+#   Layer 2 â€” segmentos:     12 tracos radiais curtos, rotacao oposta
+#   Layer 3 â€” anel interno:  circulo pulsante (seno)
+#   Glow bloom:              canvas separado -> GaussianBlur -> blend aditivo
+# ---------------------------------------------------------------------------
+
+class PalmRingEffect:
+    """Sprint 15 â€” Anel energetico ancorado na palma, com EMA, rotacao e glow."""
+
+    # Indices MediaPipe relevantes
+    _I_WRIST    = 0
+    _I_PALM     = [0, 5, 9, 13, 17]   # centro da palma
+    _I_MID_BASE = 9                    # base do medio â€” define eixo de orientacao
+
+    def __init__(self):
+        self._rot        = 0.0    # rotacao acumulada do anel externo (graus)
+        self._t          = 0.0    # tempo interno
+
+        # Estado suavizado (EMA)
+        self._cx         = None   # centro x (pixels)
+        self._cy         = None   # centro y
+        self._radius     = None   # raio base (pixels)
+
+        # Fade out ao perder a mao
+        self._fade       = 0.0    # 0.0 = invisivel, 1.0 = totalmente visivel
+        self._fade_step  = None   # calculado no primeiro frame
+
+        # Buffers pre-alocados
+        self._canvas     = None
+        self._frame_size = (0, 0)
+
+    # ------------------------------------------------------------------
+    def _get_palm_anchor(self, landmarks, h, w):
+        """Retorna (cx, cy, radius, angle_deg) em pixels.
+        Retorna None se landmarks vazio."""
+        if not landmarks:
+            return None
+        lm = landmarks[0]  # primeira mao detectada
+
+        # Centro = media dos pontos-ancora da palma
+        xs = [lm[i].x * w for i in self._I_PALM]
+        ys = [lm[i].y * h for i in self._I_PALM]
+        cx = sum(xs) / len(xs)
+        cy = sum(ys) / len(ys)
+
+        # Raio = distancia pulso -> base do medio
+        wx, wy = lm[self._I_WRIST].x * w, lm[self._I_WRIST].y * h
+        mx, my = lm[self._I_MID_BASE].x * w, lm[self._I_MID_BASE].y * h
+        dist   = math.hypot(mx - wx, my - wy)
+        radius = max(20.0, dist * config.PALM_OBJECT_SCALE)
+
+        # Angulo de orientacao (pulso -> base do medio)
+        angle  = math.degrees(math.atan2(my - wy, mx - wx))
+
+        return (cx, cy, radius, angle)
+
+    # ------------------------------------------------------------------
+    def _smooth(self, target_cx, target_cy, target_r):
+        """Aplica EMA em posicao e raio."""
+        alpha = 1.0 - config.PALM_OBJECT_SMOOTHING
+        if self._cx is None:
+            self._cx, self._cy, self._radius = target_cx, target_cy, target_r
+        else:
+            self._cx     = self._cx     * config.PALM_OBJECT_SMOOTHING + target_cx * alpha
+            self._cy     = self._cy     * config.PALM_OBJECT_SMOOTHING + target_cy * alpha
+            self._radius = self._radius * config.PALM_OBJECT_SMOOTHING + target_r  * alpha
+
+    # ------------------------------------------------------------------
+    def _draw_ring(self, canvas, cx, cy, radius, fade):
+        """Desenha o anel completo no canvas."""
+        t    = self._t
+        rot  = self._rot
+        a    = config.PALM_OBJECT_ALPHA * fade
+
+        cx_i = int(cx); cy_i = int(cy)
+        r    = int(radius)
+        r_in = max(4, int(radius * 0.55))   # raio interno pulsante
+        r_seg = int(radius * 1.18)          # raio externo dos segmentos
+
+        col_main   = config.PALM_RING_COLOR
+        col_accent = config.PALM_RING_ACCENT
+
+        # Layer 1: 4 arcos do anel externo (giratÃ³rios, 70 graus cada)
+        arc_color = tuple(min(255, int(v * a)) for v in col_main)
+        for i in range(4):
+            start_a = int(rot + i * 90)
+            cv2.ellipse(canvas, (cx_i, cy_i), (r, r),
+                        0, start_a, start_a + 70,
+                        arc_color, 2, cv2.LINE_AA)
+
+        # Layer 2: 12 segmentos radiais curtos (rotacao oposta)
+        seg_rot   = -rot * 0.5
+        seg_color = tuple(min(255, int(v * a * 0.80)) for v in col_accent)
+        n_segs    = 12
+        for i in range(n_segs):
+            ang_deg   = seg_rot + i * (360.0 / n_segs)
+            ang_rad   = math.radians(ang_deg)
+            cos_a, sin_a = math.cos(ang_rad), math.sin(ang_rad)
+            r_inner_seg  = int(radius * 0.85)
+            x0 = int(cx + cos_a * r_inner_seg)
+            y0 = int(cy + sin_a * r_inner_seg)
+            x1 = int(cx + cos_a * r_seg)
+            y1 = int(cy + sin_a * r_seg)
+            cv2.line(canvas, (x0, y0), (x1, y1), seg_color, 1, cv2.LINE_AA)
+
+        # Layer 3: anel interno pulsante (seno)
+        pulse       = 0.85 + 0.15 * math.sin(t * 2.7)
+        r_p         = max(4, int(r_in * pulse))
+        inner_color = tuple(min(255, int(v * a * 0.65)) for v in col_main)
+        cv2.ellipse(canvas, (cx_i, cy_i), (r_p, r_p),
+                    int(rot * 1.8), 5, 180, inner_color, 1, cv2.LINE_AA)
+        cv2.ellipse(canvas, (cx_i, cy_i), (r_p, r_p),
+                    int(rot * 1.8), 185, 360, inner_color, 1, cv2.LINE_AA)
+
+        # Ponto central (ancora visual)
+        dot_color = tuple(min(255, int(v * a * 0.50)) for v in col_accent)
+        cv2.circle(canvas, (cx_i, cy_i), max(2, int(radius * 0.04)),
+                   dot_color, -1, cv2.LINE_AA)
+
+    # ------------------------------------------------------------------
+    def apply(self, frame, mask, landmarks):
+        h, w = frame.shape[:2]
+        self._t   += 0.04
+        self._rot  = (self._rot + config.PALM_OBJECT_ROTATION_SPEED) % 360.0
+
+        # Inicializa fade_step se necessario
+        if self._fade_step is None:
+            self._fade_step = 1.0 / max(1, config.PALM_FADE_FRAMES)
+
+        anchor = self._get_palm_anchor(landmarks, h, w)
+
+        if anchor is not None:
+            cx, cy, radius, _angle = anchor
+            self._smooth(cx, cy, radius)
+            self._fade = min(1.0, self._fade + self._fade_step * 2.0)
+        else:
+            self._fade = max(0.0, self._fade - self._fade_step)
+
+        if self._fade < 0.01 or self._cx is None:
+            return frame
+
+        cx_i  = int(self._cx);  cy_i = int(self._cy)
+        r_max = int(self._radius * 1.30)   # raio maximo com margem
+
+        # --- ROI ao redor do anel (unica area que precisa ser processada) ---
+        pad   = config.PALM_OBJECT_GLOW_BLUR * 2 + 4
+        x0    = max(0, cx_i - r_max - pad)
+        y0    = max(0, cy_i - r_max - pad)
+        x1    = min(w, cx_i + r_max + pad)
+        y1    = min(h, cy_i + r_max + pad)
+        rw, rh = x1 - x0, y1 - y0
+
+        if rw < 4 or rh < 4:
+            return frame
+
+        # Canvas ROI pre-alocado (recria se tamanho mudou)
+        if self._frame_size != (rh, rw):
+            self._canvas     = np.zeros((rh, rw, 3), dtype=np.uint8)
+            self._frame_size = (rh, rw)
+        self._canvas[:] = 0
+
+        # Desenha anel com coordenadas relativas ao ROI
+        self._draw_ring(self._canvas, self._cx - x0, self._cy - y0,
+                        self._radius, self._fade)
+
+        # Glow bloom apenas no ROI
+        if config.PALM_OBJECT_GLOW > 0:
+            gk = config.PALM_OBJECT_GLOW_BLUR
+            gk = gk if gk % 2 == 1 else gk + 1
+            glow = cv2.GaussianBlur(self._canvas, (gk, gk), 0)
+            cv2.addWeighted(self._canvas, 1.0, glow, config.PALM_OBJECT_GLOW, 0,
+                            dst=self._canvas)
+
+        # Blend aditivo: modifica apenas a ROI in-place (sem full-frame copy)
+        # main.py faz frame = effect.apply(frame,...) entao in-place e seguro
+        cv2.add(frame[y0:y1, x0:x1], self._canvas,
+                dst=frame[y0:y1, x0:x1])
+
+        return frame

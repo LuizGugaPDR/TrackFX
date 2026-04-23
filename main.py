@@ -8,7 +8,7 @@ import config
 from camera import CameraCapture
 from tracking import HandTracker
 from render import Renderer
-from effects import GlitchEffect, DistortionEffect, DisplacementEffect, AuraEffect, TrailEffect, FireEffect, OrganicWarpEffect, RibbonWarpEffect, TrackingOverlayEffect, HUDBehindEffect
+from effects import GlitchEffect, DistortionEffect, DisplacementEffect, AuraEffect, TrailEffect, FireEffect, OrganicWarpEffect, RibbonWarpEffect, TrackingOverlayEffect, HUDBehindEffect, PalmRingEffect
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,6 +26,7 @@ _EFFECTS = {
     "organic":      OrganicWarpEffect(),
     "ribbon":       RibbonWarpEffect(),
     "hud":          HUDBehindEffect(),
+    "palm_ring":    PalmRingEffect(),
 }
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ def main():
         return
 
     logger.info(
-        "Efeito ativo: %s  |  1=glitch  2=tracking  3=distortion  4=displacement  5=aura  6=trail  7=fire  8=organic  9=ribbon  h=hud  0=off",
+        "Efeito ativo: %s  |  1=glitch  2=tracking  3=distortion  4=displacement  5=aura  6=trail  7=fire  8=organic  9=ribbon  h=hud  r=palm_ring  0=off",
         active_key,
     )
 

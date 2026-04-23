@@ -38,12 +38,14 @@ EFFECT_KEYS = {
     ord("9"): "ribbon",
     ord("h"): "hud",          # HUD futurista passando ATRÁS da pessoa
     ord("H"): "hud",          # aceita maiúscula (Caps Lock)
+    ord("r"): "palm_ring",    # anel energético ancorado na palma
+    ord("R"): "palm_ring",    # aceita maiúscula
     ord("0"): None,
 }
 
 # Efeitos intensos: todos os overlays desligados automaticamente
 # "tracking" incluído para evitar desenho duplo se SHOW_LANDMARKS=True
-INTENSE_EFFECTS = {"fire", "aura", "displacement", "organic", "trail", "ribbon", "tracking", "hud"}
+INTENSE_EFFECTS = {"fire", "aura", "displacement", "organic", "trail", "ribbon", "tracking", "hud", "palm_ring"}
 
 # Glitch avançado
 GLITCH_SHIFT = 14              # deslocamento máximo de canal em pixels
@@ -137,6 +139,18 @@ HUD_SPEED          = 1.0            # multiplicador global de velocidade de anim
 HUD_EDGE_SNAP      = True           # posicionar elementos próximos a bordas da cena
 HUD_SEG_INTERVAL   = 6             # rodar segmentação a cada N frames (performance)
 HUD_SEG_SCALE      = 0.5           # downscale para inferência do segmentador (0.5=metade)
+
+# PalmRingEffect — Sprint 15: anel energético ancorado na palma
+ACTIVE_PALM_OBJECT         = "ring"          # objeto ativo na palma (futuro: "symbol")
+PALM_OBJECT_SCALE          = 1.15            # raio do anel relativo ao tamanho da palma
+PALM_OBJECT_SMOOTHING      = 0.80            # EMA de posição/raio (0=nenhuma, 1=máxima)
+PALM_OBJECT_ROTATION_SPEED = 1.6            # graus por frame, anel externo
+PALM_OBJECT_ALPHA          = 0.92            # opacidade global do objeto
+PALM_OBJECT_GLOW           = 0.60            # intensidade do bloom
+PALM_OBJECT_GLOW_BLUR      = 17              # raio do blur do glow (ímpar)
+PALM_RING_COLOR            = (180, 220, 255) # cor BGR base — azul-branco frio
+PALM_RING_ACCENT           = (140, 255, 200) # cor dos segmentos radiais — ciano
+PALM_FADE_FRAMES           = 10              # frames de fade out ao perder a mão
 
 # HUDBehindEffect — Sprint 14: scanner reativo + motion + depth layers
 SCANNER_SPEED      = 0.006         # velocidade do scanner (fração da altura por frame)

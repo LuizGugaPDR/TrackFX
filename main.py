@@ -11,7 +11,7 @@ from camera import CameraCapture
 from screen import ScreenCapture
 from tracking import HandTracker, BodySegmenter
 from render import Renderer
-from effects import GlitchEffect, DistortionEffect, DisplacementEffect, AuraEffect, TrailEffect, FireEffect, OrganicWarpEffect, RibbonWarpEffect, TrackingOverlayEffect, HUDBehindEffect, PalmRingEffect
+from effects import GlitchEffect, DistortionEffect, DisplacementEffect, AuraEffect, TrailEffect, FireEffect, OrganicWarpEffect, RibbonWarpEffect, TrackingOverlayEffect, HUDBehindEffect, PalmRingEffect, FloatingOrbEffect, FloatingCubeEffect
 from gestures import GestureDetector
 from coords import remap_landmarks, make_hand_mask, warp_cam_to_screen, warp_mask_to_screen
 import motion
@@ -33,6 +33,8 @@ _EFFECTS = {
     "ribbon":       RibbonWarpEffect(),
     "hud":          HUDBehindEffect(),
     "palm_ring":    PalmRingEffect(),
+    "orb":          FloatingOrbEffect(),
+    "cube":         FloatingCubeEffect(),
 }
 
 logger = logging.getLogger(__name__)
@@ -61,7 +63,7 @@ def main():
         return
 
     logger.info(
-        "Efeito ativo: %s  |  1=glitch  2=tracking  3=distortion  4=displacement  5=aura  6=trail  7=fire  8=organic  9=ribbon  h=hud  r=palm_ring  0=off",
+        "Efeito ativo: %s  |  1=glitch  2=tracking  3=distortion  4=displacement  5=aura  6=trail  7=fire  8=organic  9=ribbon  h=hud  r=palm_ring  o=orb  c=cube  0=off",
         active_key,
     )
 

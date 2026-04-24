@@ -40,12 +40,16 @@ EFFECT_KEYS = {
     ord("H"): "hud",          # aceita maiúscula (Caps Lock)
     ord("r"): "palm_ring",    # anel energético ancorado na palma
     ord("R"): "palm_ring",    # aceita maiúscula
+    ord("o"): "orb",          # FloatingOrb — objeto flutuante no centro
+    ord("O"): "orb",          # aceita maiúscula
+    ord("c"): "cube",         # FloatingCube — cubo wireframe holográfico
+    ord("C"): "cube",         # aceita maiúscula
     ord("0"): None,
 }
 
 # Efeitos intensos: todos os overlays desligados automaticamente
 # "tracking" incluído para evitar desenho duplo se SHOW_LANDMARKS=True
-INTENSE_EFFECTS = {"fire", "aura", "displacement", "organic", "trail", "ribbon", "tracking", "hud", "palm_ring"}
+INTENSE_EFFECTS = {"fire", "aura", "displacement", "organic", "trail", "ribbon", "tracking", "hud", "palm_ring", "orb", "cube"}
 
 # Glitch avançado
 GLITCH_SHIFT = 14              # deslocamento máximo de canal em pixels
@@ -166,7 +170,7 @@ PINCH_COOLDOWN_FRAMES = 20    # frames de bloqueio após disparar (~667ms a 30fp
 SHOW_PINCH_INDICATOR = True   # indicador visual entre polegar e indicador
 GESTURE_EFFECT_CYCLE = [      # ordem de troca de efeito por pinch
     "glitch", "distortion", "displacement", "aura",
-    "trail", "fire", "organic", "ribbon", "hud", "palm_ring",
+    "trail", "fire", "organic", "ribbon", "hud", "palm_ring", "orb", "cube",
 ]
 
 # MotionTracker — motion.py: metricas globais de movimento da mao
@@ -223,3 +227,73 @@ PRES_USER_MARGIN           = 0       # margem da borda em pixels
 PRES_CAM_WIDTH             = 640     # resolução da webcam em presentation mode (mais rápido que 1280×720)
 PRES_CAM_HEIGHT            = 360     # idem (altura)
 PRES_SEG_INTERVAL          = 6       # segmentação a cada N frames (12 era muito lento → mask velha)
+
+# ---------------------------------------------------------------------------
+# FloatingOrbEffect — Sprint FloatingOrb: objeto energético flutuante no centro
+# ---------------------------------------------------------------------------
+FLOATING_ORB_RADIUS         = 120    # raio base do orb em pixels
+FLOATING_ORB_ALPHA          = 0.90   # opacidade global dos elementos
+FLOATING_ORB_GLOW           = 0.60   # intensidade do bloom (0=off)
+FLOATING_ORB_GLOW_BLUR      = 31     # raio do blur do glow (px, ímpar)
+FLOATING_ORB_ROTATION_SPEED = 0.8    # graus por frame (anel externo)
+FLOATING_ORB_PULSE_SPEED    = 0.055  # velocidade da pulsação (rad/frame)
+FLOATING_ORB_REACTIVITY     = 1.0    # multiplicador de reatividade ao movimento
+FLOATING_ORB_COLOR          = (220, 160, 255)  # cor BGR base — violeta/lavanda
+FLOATING_ORB_ACCENT         = (100, 255, 220)  # cor dos segmentos — ciano
+
+# FloatingOrbEffect — Sprint Orb Interaction Control
+FLOATING_ORB_FOLLOW_STRENGTH          = 0.40   # [0..1] fração do offset da mão transferido ao orb
+FLOATING_ORB_POSITION_SMOOTHING       = 0.88   # EMA de posição (0=imediato, 1=inércia máxima)
+FLOATING_ORB_MAX_OFFSET_X             = 200    # deslocamento horizontal máximo em pixels
+FLOATING_ORB_MAX_OFFSET_Y             = 150    # deslocamento vertical máximo em pixels
+FLOATING_ORB_MANUAL_ROTATION_STRENGTH = 6.0    # graus/frame adicionados por nx unitário
+FLOATING_ORB_ROTATION_DAMPING         = 0.88   # decaimento da velocidade rotacional (0=brusco, 1=nenhum)
+FLOATING_ORB_IDLE_ROTATION_SPEED      = 0.4    # velocidade de rotação base sem mão (deg/frame)
+FLOATING_ORB_VERTICAL_SCALE_STRENGTH  = 0.25   # influência de ny na escala (cima=expande)
+FLOATING_ORB_MIN_SCALE                = 0.65   # escala mínima do orb
+FLOATING_ORB_MAX_SCALE                = 1.40   # escala máxima do orb
+FLOATING_ORB_ENERGY_FROM_SPEED        = 1.0    # multiplicador de speed→energia
+FLOATING_ORB_ACCEL_BURST_STRENGTH     = 0.60   # contribuição extra da aceleração para energia
+
+# FloatingOrbEffect — Sprint Orb Finger Control
+FLOATING_ORB_USE_FINGER_CONTROL       = True   # True=controle pelo indicador; False=motion.state legado
+FLOATING_ORB_FINGER_ROTATION_STRENGTH = 1.0    # multiplicador do delta angular do indicador
+FLOATING_ORB_FINGER_ROTATION_SMOOTHING = 0.75  # EMA do delta angular (0=seco, 1=inércia máxima)
+FLOATING_ORB_FINGER_CENTER_BIAS       = 0.60   # 0=palma, 1=ponta do indicador (posição do orb)
+FLOATING_ORB_PINCH_SCALE_STRENGTH     = 0.50   # fração da mão que equivale a 100% aberto
+FLOATING_ORB_IDLE_X                   = 0.50   # posição X idle normalizada [0..1]
+FLOATING_ORB_IDLE_Y                   = 0.50   # posição Y idle normalizada [0..1]
+FLOATING_ORB_FLOAT_AMP                = 14     # amplitude da microflutuação orgânica (px)
+FLOATING_ORB_FLOAT_SPEED              = 0.018  # velocidade da flutuação orgânica (rad/frame)
+FLOATING_ORB_DRIFT_STRENGTH           = 0.18   # fração do offset da mão transferida ao orb (0=centro fixo)
+
+# ---------------------------------------------------------------------------
+# FloatingCubeEffect — Sprint FloatingCube: cubo wireframe holográfico flutuante
+# ---------------------------------------------------------------------------
+FLOATING_CUBE_SIZE                  = 55     # metade do lado do cubo em pixels (half-extent)
+FLOATING_CUBE_MIN_SCALE             = 0.45   # escala mínima (pinch fechado)
+FLOATING_CUBE_MAX_SCALE             = 1.20   # escala máxima (mão aberta)
+FLOATING_CUBE_ALPHA                 = 0.90   # opacidade global das arestas
+FLOATING_CUBE_COLOR                 = (220, 230, 255)  # cor BGR das arestas — branco azulado
+FLOATING_CUBE_ACCENT_COLOR          = (140, 200, 255)  # cor das arestas traseiras (mais escura)
+FLOATING_CUBE_GLOW                  = 0.55   # intensidade do bloom (0=off)
+FLOATING_CUBE_GLOW_BLUR             = 27     # raio do blur do glow (px, ímpar)
+FLOATING_CUBE_IDLE_ROTATION_X       = 0.18   # rotação automática no eixo X (deg/frame)
+FLOATING_CUBE_IDLE_ROTATION_Y       = 0.28   # rotação automática no eixo Y (deg/frame)
+FLOATING_CUBE_IDLE_ROTATION_Z       = 0.06   # rotação automática no eixo Z (deg/frame)
+FLOATING_CUBE_FINGER_ROTATION_X     = 1.2    # multiplicador de rotação X por movimento vertical do indicador
+FLOATING_CUBE_FINGER_ROTATION_Y     = 1.4    # multiplicador de rotação Y por movimento horizontal do indicador
+FLOATING_CUBE_ROTATION_SMOOTHING    = 0.78   # EMA do delta angular (0=seco, 1=inércia máxima)
+FLOATING_CUBE_ROTATION_DAMPING      = 0.88   # decaimento da velocidade rotacional
+FLOATING_CUBE_POSITION_SMOOTHING    = 0.90   # EMA de posição do cubo
+FLOATING_CUBE_IDLE_X                = 0.50   # posição X idle normalizada [0..1]
+FLOATING_CUBE_IDLE_Y                = 0.50   # posição Y idle normalizada [0..1]
+FLOATING_CUBE_IDLE_DRIFT_AMP        = 10     # amplitude da microflutuação orgânica (px)
+FLOATING_CUBE_IDLE_DRIFT_SPEED      = 0.016  # velocidade da flutuação orgânica (rad/frame)
+FLOATING_CUBE_DRIFT_STRENGTH        = 0.14   # fração do offset da mão transferida ao cubo
+FLOATING_CUBE_OPEN_HAND_THRESHOLD   = 0.38   # distância min indicador-palma / hand_size para "mão aberta"
+FLOATING_CUBE_FADE_SPEED            = 0.06   # incremento de alpha por frame ao aparecer/desaparecer
+FLOATING_CUBE_PERSPECTIVE_FOV       = 500    # distância focal pseudo-perspectiva (px)
+FLOATING_CUBE_ENERGY_FROM_SPEED     = 1.0    # multiplicador de speed→energia (glow)
+FLOATING_CUBE_ACCEL_BURST           = 0.50   # burst de energia por aceleração brusca
+FLOATING_CUBE_TWO_HAND_SCALE        = 0.50   # influência da distância entre mãos na escala (0=off)

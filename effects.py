@@ -1470,3 +1470,654 @@ class PalmRingEffect:
                 dst=frame[y0:y1, x0:x1])
 
         return frame
+
+
+# ---------------------------------------------------------------------------
+# FloatingOrbEffect -- Sprint Orb Finger Control
+#
+# Posicao : lerp(palma, ponta_indicador, FINGER_CENTER_BIAS)
+# Rotacao : delta angular do indicador ao redor do orb
+# Escala  : distancia polegar-indicador normalizada pelo tamanho da mao
+# Energia : motion.state.speed + accel (glow e brilho)
+# Idle    : FLOATING_ORB_IDLE_X / IDLE_Y quando sem mao
+#
+# Indice MediaPipe usados:
+#   0  = pulso (wrist)
+#   4  = ponta polegar (thumb tip)
+#   5  = base indicador
+#   8  = ponta indicador (index tip)
+#   9  = base medio
+#   12 = ponta medio  (middle tip)
+#   [0,5,9,13,17] = centro da palma
+#
+# Controle por FLOATING_ORB_USE_FINGER_CONTROL:
+#   True  -> controle fino pelo indicador (padrao)
+#   False -> fallback motion.state da sprint anterior
+#
+# Extensao futura (NAO implementada):
+#   two-hand control  -> distancia entre maos -> scale; centro -> posicao
+#   pinch lock        -> pinch ativo fixa posicao do orb no espaco
+#   modo orbital      -> orb orbita ao redor da palma
+# ---------------------------------------------------------------------------
+
+class FloatingOrbEffect:
+    """Sprint Orb Finger Control -- controle pelo indicador, escala por pinch."""
+
+    # Indices MediaPipe relevantes
+    _I_WRIST      = 0
+    _I_THUMB_TIP  = 4
+    _I_PALM       = [0, 5, 9, 13, 17]
+    _I_INDEX_TIP  = 8
+    _I_MID_BASE   = 9
+    _I_MIDDLE_TIP = 12
+
+    def __init__(self):
+        self._t              = 0.0
+        self._rot            = 0.0
+        self._rot_vel        = 0.0    # velocidade rotacional acumulada (deg/frame)
+        self._canvas         = None
+        self._frame_size     = None
+        self._orb_cx         = None   # posicao suavizada X (None = nao inicializado)
+        self._orb_cy         = None   # posicao suavizada Y
+        self._scale          = 1.0    # escala atual do raio [MIN..MAX]
+        self._energy         = 0.0    # energia atual [0..1]
+        self._prev_fing_ang  = None   # angulo anterior do indicador em relacao ao orb
+        self._prev_idx_tip   = None   # posicao anterior do indicador (para detectar troca de mao)
+        self._float_phase    = 0.0    # fase da microflutuacao organica de posicao
+
+    # ------------------------------------------------------------------
+    def _finger_data(self, landmarks, h, w, orb_cx, orb_cy):
+        """Extrai coordenadas do indicador da mao mais proxima do orb.
+        Aceita qualquer numero de maos -- escolhe a melhor para controle.
+        Retorna tupla ou None se landmarks vazio."""
+        if not landmarks:
+            return None
+
+        # Selecionar a mao cujo indicador esta mais proximo do centro do orb.
+        # Isso garante controle correto independente de qual mao ou lado da tela.
+        best_lm   = landmarks[0]
+        best_dist = float('inf')
+        for lm_candidate in landmarks:
+            ix = lm_candidate[self._I_INDEX_TIP].x * w
+            iy = lm_candidate[self._I_INDEX_TIP].y * h
+            d  = math.hypot(ix - orb_cx, iy - orb_cy)
+            if d < best_dist:
+                best_dist = d
+                best_lm   = lm_candidate
+        lm = best_lm
+
+        # Palm center (media dos 5 pontos-ancora)
+        xs = [lm[i].x * w for i in self._I_PALM]
+        ys = [lm[i].y * h for i in self._I_PALM]
+        palm_cx = sum(xs) / len(xs)
+        palm_cy = sum(ys) / len(ys)
+
+        # Pontas dos dedos
+        idx_x = lm[self._I_INDEX_TIP].x  * w
+        idx_y = lm[self._I_INDEX_TIP].y  * h
+        mid_x = lm[self._I_MIDDLE_TIP].x * w
+        mid_y = lm[self._I_MIDDLE_TIP].y * h
+        thu_x = lm[self._I_THUMB_TIP].x  * w
+        thu_y = lm[self._I_THUMB_TIP].y  * h
+
+        # Tamanho da mao (pulso -> base do medio)
+        wx = lm[self._I_WRIST].x    * w
+        wy = lm[self._I_WRIST].y    * h
+        mx = lm[self._I_MID_BASE].x * w
+        my = lm[self._I_MID_BASE].y * h
+        hand_size = max(1.0, math.hypot(mx - wx, my - wy))
+
+        return (palm_cx, palm_cy, idx_x, idx_y, mid_x, mid_y,
+                thu_x, thu_y, hand_size)
+
+    # ------------------------------------------------------------------
+    def _draw_orb(self, canvas, cx, cy, radius, nx, energy, t, rot):
+        col_main   = config.FLOATING_ORB_COLOR
+        col_accent = config.FLOATING_ORB_ACCENT
+        a          = config.FLOATING_ORB_ALPHA
+        react      = config.FLOATING_ORB_REACTIVITY
+        cx_i = int(cx)
+        cy_i = int(cy)
+
+        # Pulsacao base
+        pulse  = 0.90 + 0.10 * math.sin(t * 3.5)
+        r_main = max(8, int(radius * pulse))
+        r_in   = max(4, int(r_main * 0.52))
+        r_seg  = max(6, int(r_main * 1.18))
+
+        # Inclinacao visual dos arcos externos (nx)
+        tilt = abs(nx) * react
+        rx   = max(4, int(r_main * (1.0 + tilt * 0.15)))
+        ry   = max(4, int(r_main * (1.0 - tilt * 0.08)))
+
+        # 4 arcos externos giratorios
+        ring_color = tuple(min(255, int(v * a * 0.85)) for v in col_main)
+        for i in range(4):
+            start_a = int(rot + i * 90)
+            cv2.ellipse(canvas, (cx_i, cy_i), (rx, ry),
+                        0, start_a, start_a + 55, ring_color, 2, cv2.LINE_AA)
+
+        # 3 arcos internos (contra-rotacao)
+        arc_color = tuple(min(255, int(v * a * 0.60)) for v in col_accent)
+        for i in range(3):
+            start_a = int(-rot * 1.3 + i * 120)
+            cv2.ellipse(canvas, (cx_i, cy_i), (r_in, r_in),
+                        0, start_a, start_a + 45, arc_color, 1, cv2.LINE_AA)
+
+        # 8 segmentos radiais (reatividade de energia)
+        seg_rot    = rot * 0.35
+        seg_bright = 0.65 + energy * react * 0.35
+        seg_color  = tuple(min(255, int(v * a * seg_bright)) for v in col_accent)
+        for i in range(8):
+            ang_rad      = math.radians(seg_rot + i * 45.0)
+            cos_a, sin_a = math.cos(ang_rad), math.sin(ang_rad)
+            r_in_seg     = int(r_main * 0.78)
+            x0 = int(cx + cos_a * r_in_seg)
+            y0 = int(cy + sin_a * r_in_seg)
+            x1 = int(cx + cos_a * r_seg)
+            y1 = int(cy + sin_a * r_seg)
+            cv2.line(canvas, (x0, y0), (x1, y1), seg_color, 1, cv2.LINE_AA)
+
+        # Anel pulsante interno
+        pulse2       = 0.85 + 0.15 * math.sin(t * 5.2 + 1.0)
+        r_pulse      = max(3, int(r_in * 0.65 * pulse2))
+        pulse_bright = 0.50 + energy * react * 0.50
+        pulse_color  = tuple(min(255, int(v * a * pulse_bright)) for v in col_main)
+        cv2.circle(canvas, (cx_i, cy_i), r_pulse, pulse_color, 1, cv2.LINE_AA)
+
+        # Nucleo central + halo
+        core_r      = max(3, int(r_main * 0.06 + energy * react * 5))
+        core_bright = 0.60 + energy * react * 0.40
+        core_color  = tuple(min(255, int(v * core_bright)) for v in col_main)
+        cv2.circle(canvas, (cx_i, cy_i), core_r, core_color, -1, cv2.LINE_AA)
+        halo_color  = tuple(min(255, int(v * 0.30)) for v in col_main)
+        cv2.circle(canvas, (cx_i, cy_i), core_r + 3, halo_color, 1, cv2.LINE_AA)
+
+    # ------------------------------------------------------------------
+    def apply(self, frame, mask, landmarks):
+        h, w = frame.shape[:2]
+        s = motion.state
+
+        # --- Inicializar posicao idle na primeira execucao ---
+        if self._orb_cx is None:
+            self._orb_cx = w * config.FLOATING_ORB_IDLE_X
+            self._orb_cy = h * config.FLOATING_ORB_IDLE_Y
+
+        # --- Energia: EMA de speed + burst de aceleracao ---
+        energy_target = min(1.0,
+            s.speed * config.FLOATING_ORB_ENERGY_FROM_SPEED +
+            s.accel * config.FLOATING_ORB_ACCEL_BURST_STRENGTH)
+        self._energy = self._energy * 0.85 + energy_target * 0.15
+
+        pos_smooth = config.FLOATING_ORB_POSITION_SMOOTHING
+        damp       = config.FLOATING_ORB_ROTATION_DAMPING
+
+        # --- Posicao: centro + drift suave em direcao a mao + microflutuacao organica ---
+        # O orb nunca gruda na palma -- drift e limitado; flutuacao organica nunca para.
+        self._float_phase += config.FLOATING_ORB_FLOAT_SPEED
+        float_x = math.sin(self._float_phase * 1.00) * config.FLOATING_ORB_FLOAT_AMP
+        float_y = math.sin(self._float_phase * 0.73 + 1.3) * config.FLOATING_ORB_FLOAT_AMP * 0.6
+        base_cx = w * config.FLOATING_ORB_IDLE_X
+        base_cy = h * config.FLOATING_ORB_IDLE_Y
+        if s.active:
+            drift     = config.FLOATING_ORB_DRIFT_STRENGTH
+            target_cx = base_cx + (s.cx - base_cx) * drift + float_x
+            target_cy = base_cy + (s.cy - base_cy) * drift + float_y
+        else:
+            target_cx = base_cx + float_x
+            target_cy = base_cy + float_y
+        self._orb_cx = self._orb_cx * pos_smooth + target_cx * (1.0 - pos_smooth)
+        self._orb_cy = self._orb_cy * pos_smooth + target_cy * (1.0 - pos_smooth)
+
+        # --- Extrair dados dos dedos se finger control ativo ---
+        fdata = None
+        if config.FLOATING_ORB_USE_FINGER_CONTROL:
+            fdata = self._finger_data(landmarks, h, w, self._orb_cx, self._orb_cy)
+
+        # ----------------------------------------------------------------
+        # Branch 1: controle pelo indicador
+        # ----------------------------------------------------------------
+        if fdata is not None:
+            (_palm_cx, _palm_cy, idx_x, idx_y, mid_x, mid_y,
+             thu_x, thu_y, hand_size) = fdata
+
+            # Posicao: fixa no centro do frame -- orb nao segue a mao
+            # palm_cx/cy ignorados intencionalmente
+
+            # Rotacao: delta angular do indicador em torno do orb.
+            # Resetar prev_fing_ang se o indicador teleportou (troca de mao entre frames).
+            if self._prev_idx_tip is not None:
+                jump = math.hypot(idx_x - self._prev_idx_tip[0],
+                                  idx_y - self._prev_idx_tip[1])
+                if jump > hand_size * 0.60:      # salto maior que 60% da mao = nova mao
+                    self._prev_fing_ang = None
+            self._prev_idx_tip = (idx_x, idx_y)
+            fing_ang = math.degrees(math.atan2(
+                idx_y - self._orb_cy, idx_x - self._orb_cx))
+            mid_dist = math.hypot(mid_x - idx_x, mid_y - idx_y)
+            if mid_dist < hand_size * 0.20:
+                mid_ang = math.degrees(math.atan2(
+                    mid_y - self._orb_cy, mid_x - self._orb_cx))
+                ang_diff = ((mid_ang - fing_ang + 180.0) % 360.0) - 180.0
+                fing_ang = fing_ang + ang_diff * 0.5
+
+            if self._prev_fing_ang is not None:
+                raw_delta = ((fing_ang - self._prev_fing_ang + 180.0) % 360.0) - 180.0
+                raw_delta = max(-25.0, min(25.0, raw_delta))    # clamp anti-salto
+                smooth_r  = config.FLOATING_ORB_FINGER_ROTATION_SMOOTHING
+                strength  = config.FLOATING_ORB_FINGER_ROTATION_STRENGTH
+                self._rot_vel = (self._rot_vel * smooth_r
+                                 + raw_delta * strength * (1.0 - smooth_r))
+            self._prev_fing_ang = fing_ang
+
+            # Escala: distancia polegar->indicador normalizada
+            pinch_dist   = math.hypot(thu_x - idx_x, thu_y - idx_y)
+            pinch_norm   = pinch_dist / hand_size
+            max_open     = max(0.01, config.FLOATING_ORB_PINCH_SCALE_STRENGTH)
+            scale_t      = max(0.0, min(1.0, pinch_norm / max_open))
+            mn, mx_s     = config.FLOATING_ORB_MIN_SCALE, config.FLOATING_ORB_MAX_SCALE
+            target_scale = mn + (mx_s - mn) * scale_t
+            self._scale  = self._scale * 0.90 + target_scale * 0.10
+
+        # ----------------------------------------------------------------
+        # Branch 2: fallback motion.state (USE_FINGER_CONTROL=False + mao ativa)
+        # ----------------------------------------------------------------
+        elif s.active and not config.FLOATING_ORB_USE_FINGER_CONTROL:
+            # Posicao: fixa no centro do frame -- orb nao segue a mao
+            drive = s.nx * config.FLOATING_ORB_MANUAL_ROTATION_STRENGTH * (1.0 + self._energy * 2.0)
+            self._rot_vel = self._rot_vel * damp + drive * (1.0 - damp)
+            scale_t = 1.0 - s.ny * config.FLOATING_ORB_VERTICAL_SCALE_STRENGTH
+            scale_t = max(config.FLOATING_ORB_MIN_SCALE, min(config.FLOATING_ORB_MAX_SCALE, scale_t))
+            self._scale = self._scale * 0.90 + scale_t * 0.10
+
+        # ----------------------------------------------------------------
+        # Branch 3: idle -- sem mao ou finger_control sem landmarks
+        # ----------------------------------------------------------------
+        else:
+            self._rot_vel  *= damp
+            self._scale     = self._scale * 0.95 + 1.0 * 0.05
+            self._prev_fing_ang = None   # reset para proximo ciclo com mao
+            self._prev_idx_tip  = None
+
+        # --- Rotacao e tempo ---
+        self._rot = (self._rot + config.FLOATING_ORB_IDLE_ROTATION_SPEED + self._rot_vel) % 360.0
+        self._t  += config.FLOATING_ORB_PULSE_SPEED
+
+        # --- ROI ao redor da posicao atual do orb ---
+        radius = config.FLOATING_ORB_RADIUS * self._scale
+        cx     = self._orb_cx
+        cy     = self._orb_cy
+        pad    = config.FLOATING_ORB_GLOW_BLUR * 2 + 8
+        r_pad  = int(radius * 1.35) + pad
+        x0     = max(0, int(cx) - r_pad)
+        y0     = max(0, int(cy) - r_pad)
+        x1     = min(w, int(cx) + r_pad)
+        y1     = min(h, int(cy) + r_pad)
+        rw, rh = x1 - x0, y1 - y0
+
+        if rw < 8 or rh < 8:
+            return frame
+
+        if self._frame_size != (rh, rw):
+            self._canvas     = np.zeros((rh, rw, 3), dtype=np.uint8)
+            self._frame_size = (rh, rw)
+        self._canvas[:] = 0
+
+        self._draw_orb(
+            self._canvas,
+            cx - x0, cy - y0,
+            radius,
+            nx=s.nx,
+            energy=self._energy,
+            t=self._t,
+            rot=self._rot,
+        )
+
+        if config.FLOATING_ORB_GLOW > 0:
+            gk = config.FLOATING_ORB_GLOW_BLUR
+            gk = gk if gk % 2 == 1 else gk + 1
+            react       = config.FLOATING_ORB_REACTIVITY
+            energy_glow = config.FLOATING_ORB_GLOW * (1.0 + self._energy * react * 1.5)
+            glow = cv2.GaussianBlur(self._canvas, (gk, gk), 0)
+            cv2.addWeighted(self._canvas, 1.0, glow, min(energy_glow, 2.5), 0,
+                            dst=self._canvas)
+
+        cv2.add(frame[y0:y1, x0:x1], self._canvas,
+                dst=frame[y0:y1, x0:x1])
+        return frame
+
+# ---------------------------------------------------------------------------
+# FloatingCubeEffect -- Sprint FloatingCube: cubo wireframe holografico
+#
+# Estrutura 3D fake:
+#   8 vertices locais em [-SIZE, +SIZE]^3
+#   12 arestas (sem objeto interno)
+#   Rotacao manual por eixo X/Y (delta do indicador) + idle auto-spin
+#   Projecao pseudo-perspectiva manual (sem engine 3D)
+#
+# Controle:
+#   indicador (lm 8)   -> delta X/Y do dedo = rotacao X/Y
+#   pinch (lm 4 vs 8)  -> escala do cubo
+#   mao aberta         -> fade in; fechada/ausente = fade out
+#   motion.state.speed -> energia (glow + brilho)
+#
+# Posicao:
+#   Centro fixo com microflutuacao organica (Lissajous)
+#   Drift suave em direcao a mao (FLOATING_CUBE_DRIFT_STRENGTH)
+#
+# Arestas traseiras (z medio < 0 no espaco projetado) sao desenhadas
+# com a cor de acento mais escura, gerando profundidade visual.
+#
+# Extensao futura (NAO implementada):
+#   two-hand control: distancia entre maos -> scale; centro -> posicao
+#   pinch lock: congelar rotacao enquanto pinch ativo
+#   rotacao Z pelo tilt da mao
+# ---------------------------------------------------------------------------
+
+class FloatingCubeEffect:
+    """Sprint FloatingCube -- cubo wireframe holografico com controle pelo indicador."""
+
+    # Indices MediaPipe
+    _I_WRIST      = 0
+    _I_THUMB_TIP  = 4
+    _I_PALM       = [0, 5, 9, 13, 17]
+    _I_INDEX_TIP  = 8
+    _I_MID_BASE   = 9
+
+    # 8 vertices do cubo em espaco local [-1, +1]^3 (escalados por SIZE)
+    _VERTS = [
+        (-1, -1, -1), ( 1, -1, -1), ( 1,  1, -1), (-1,  1, -1),  # face traseira
+        (-1, -1,  1), ( 1, -1,  1), ( 1,  1,  1), (-1,  1,  1),  # face frontal
+    ]
+    # 12 arestas: pares de indices de vertices
+    _EDGES = [
+        (0, 1), (1, 2), (2, 3), (3, 0),  # face traseira
+        (4, 5), (5, 6), (6, 7), (7, 4),  # face frontal
+        (0, 4), (1, 5), (2, 6), (3, 7),  # arestas laterais
+    ]
+
+    def __init__(self):
+        self._rx         = 25.0   # rotacao acumulada em X (deg)
+        self._ry         = 45.0   # rotacao acumulada em Y (deg)
+        self._rz         = 0.0    # rotacao acumulada em Z (deg)
+        self._rvx        = 0.0    # velocidade rotacional X (deg/frame)
+        self._rvy        = 0.0    # velocidade rotacional Y (deg/frame)
+        self._scale      = 1.0    # escala atual
+        self._alpha      = 0.0    # fade atual [0..1]
+        self._energy     = 0.0    # energia atual [0..1]
+        self._cube_cx    = None   # posicao suavizada X
+        self._cube_cy    = None   # posicao suavizada Y
+        self._float_phase = 0.0   # fase da microflutuacao
+        self._prev_idx   = None   # posicao anterior do indicador (px, py)
+        self._prev_idx_tip = None # para deteccao de troca de mao
+        self._canvas     = None
+        self._frame_size = None
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _rotate(verts, rx_deg, ry_deg, rz_deg):
+        """Aplica rotacao ZYX aos vertices 3D. Retorna lista de (x,y,z)."""
+        rx = math.radians(rx_deg)
+        ry = math.radians(ry_deg)
+        rz = math.radians(rz_deg)
+
+        cx, sx = math.cos(rx), math.sin(rx)
+        cy, sy = math.cos(ry), math.sin(ry)
+        cz, sz = math.cos(rz), math.sin(rz)
+
+        result = []
+        for (vx, vy, vz) in verts:
+            # Z
+            x1 = vx * cz - vy * sz
+            y1 = vx * sz + vy * cz
+            z1 = vz
+            # Y
+            x2 = x1 * cy + z1 * sy
+            y2 = y1
+            z2 = -x1 * sy + z1 * cy
+            # X
+            x3 = x2
+            y3 = y2 * cx - z2 * sx
+            z3 = y2 * sx + z2 * cx
+            result.append((x3, y3, z3))
+        return result
+
+    @staticmethod
+    def _project(verts_3d, cx, cy, fov):
+        """Projecao pseudo-perspectiva manual para 2D. Retorna lista de (px, py).
+        Vertices ja estao em espaco pixel [-size, +size]; sem multiplicacao extra."""
+        pts = []
+        for (x, y, z) in verts_3d:
+            # dz = distancia focal + deslocamento Z (ja em pixels)
+            dz = max(fov * 0.10, fov + z)
+            px = cx + x * fov / dz
+            py = cy + y * fov / dz
+            pts.append((int(px), int(py)))
+        return pts
+
+    # ------------------------------------------------------------------
+    def _get_hand_data(self, landmarks, h, w, cx, cy):
+        """Extrai dados da mao mais proxima do cubo.
+        Retorna None se sem landmarks."""
+        if not landmarks:
+            return None
+
+        best_lm   = landmarks[0]
+        best_dist = float('inf')
+        for lm_c in landmarks:
+            ix = lm_c[self._I_INDEX_TIP].x * w
+            iy = lm_c[self._I_INDEX_TIP].y * h
+            d  = math.hypot(ix - cx, iy - cy)
+            if d < best_dist:
+                best_dist = d
+                best_lm   = lm_c
+        lm = best_lm
+
+        # Palm center
+        xs = [lm[i].x * w for i in self._I_PALM]
+        ys = [lm[i].y * h for i in self._I_PALM]
+        palm_cx = sum(xs) / len(xs)
+        palm_cy = sum(ys) / len(ys)
+
+        # Tamanho da mao
+        wx = lm[self._I_WRIST].x    * w
+        wy = lm[self._I_WRIST].y    * h
+        mx = lm[self._I_MID_BASE].x * w
+        my = lm[self._I_MID_BASE].y * h
+        hand_size = max(1.0, math.hypot(mx - wx, my - wy))
+
+        # Index tip
+        idx_x = lm[self._I_INDEX_TIP].x * w
+        idx_y = lm[self._I_INDEX_TIP].y * h
+
+        # Thumb tip (para pinch)
+        thu_x = lm[self._I_THUMB_TIP].x * w
+        thu_y = lm[self._I_THUMB_TIP].y * h
+
+        # Distancia indicador-palma normalizada (detectar mao aberta)
+        idx_palm_dist = math.hypot(idx_x - palm_cx, idx_y - palm_cy) / hand_size
+
+        return (palm_cx, palm_cy, idx_x, idx_y, thu_x, thu_y,
+                hand_size, idx_palm_dist)
+
+    # ------------------------------------------------------------------
+    def apply(self, frame, mask, landmarks):
+        h, w = frame.shape[:2]
+        s = motion.state
+
+        # Inicializar posicao no primeiro frame
+        if self._cube_cx is None:
+            self._cube_cx = w * config.FLOATING_CUBE_IDLE_X
+            self._cube_cy = h * config.FLOATING_CUBE_IDLE_Y
+
+        # --- Energia ---
+        energy_t   = min(1.0, s.speed * config.FLOATING_CUBE_ENERGY_FROM_SPEED
+                              + s.accel * config.FLOATING_CUBE_ACCEL_BURST)
+        self._energy = self._energy * 0.85 + energy_t * 0.15
+
+        # --- Posicao: centro + drift suave + microflutuacao ---
+        self._float_phase += config.FLOATING_CUBE_IDLE_DRIFT_SPEED
+        float_x = math.sin(self._float_phase * 1.00) * config.FLOATING_CUBE_IDLE_DRIFT_AMP
+        float_y = math.sin(self._float_phase * 0.71 + 1.1) * config.FLOATING_CUBE_IDLE_DRIFT_AMP * 0.6
+        base_cx = w * config.FLOATING_CUBE_IDLE_X
+        base_cy = h * config.FLOATING_CUBE_IDLE_Y
+        if s.active:
+            dr        = config.FLOATING_CUBE_DRIFT_STRENGTH
+            target_cx = base_cx + (s.cx - base_cx) * dr + float_x
+            target_cy = base_cy + (s.cy - base_cy) * dr + float_y
+        else:
+            target_cx = base_cx + float_x
+            target_cy = base_cy + float_y
+        ps = config.FLOATING_CUBE_POSITION_SMOOTHING
+        self._cube_cx = self._cube_cx * ps + target_cx * (1.0 - ps)
+        self._cube_cy = self._cube_cy * ps + target_cy * (1.0 - ps)
+
+        # --- Dados da mao ---
+        hdata = self._get_hand_data(landmarks, h, w, self._cube_cx, self._cube_cy)
+
+        fade_step = config.FLOATING_CUBE_FADE_SPEED
+        damp      = config.FLOATING_CUBE_ROTATION_DAMPING
+        smooth_r  = config.FLOATING_CUBE_ROTATION_SMOOTHING
+
+        if hdata is not None:
+            (palm_cx, palm_cy, idx_x, idx_y, thu_x, thu_y,
+             hand_size, idx_palm_dist) = hdata
+
+            # Fade in/out por mao aberta
+            if idx_palm_dist >= config.FLOATING_CUBE_OPEN_HAND_THRESHOLD:
+                self._alpha = min(1.0, self._alpha + fade_step * 2.0)
+            else:
+                self._alpha = max(0.0, self._alpha - fade_step)
+
+            # Rotacao por delta do indicador (reset se teleportou)
+            if self._prev_idx_tip is not None:
+                jump = math.hypot(idx_x - self._prev_idx_tip[0],
+                                  idx_y - self._prev_idx_tip[1])
+                if jump > hand_size * 0.60:
+                    self._prev_idx = None
+            self._prev_idx_tip = (idx_x, idx_y)
+
+            if self._prev_idx is not None:
+                dx_raw = idx_x - self._prev_idx[0]
+                dy_raw = idx_y - self._prev_idx[1]
+                # Clamp para evitar saltos bruscos
+                dx_c = max(-20.0, min(20.0, dx_raw))
+                dy_c = max(-20.0, min(20.0, dy_raw))
+                str_x = config.FLOATING_CUBE_FINGER_ROTATION_X
+                str_y = config.FLOATING_CUBE_FINGER_ROTATION_Y
+                self._rvx = self._rvx * smooth_r + (-dy_c * str_x) * (1.0 - smooth_r)
+                self._rvy = self._rvy * smooth_r + ( dx_c * str_y) * (1.0 - smooth_r)
+            self._prev_idx = (idx_x, idx_y)
+
+            # Escala por pinch
+            pinch_dist  = math.hypot(thu_x - idx_x, thu_y - idx_y)
+            pinch_norm  = max(0.0, min(1.0, pinch_dist / max(1.0, hand_size * 0.5)))
+            mn, mx_s    = config.FLOATING_CUBE_MIN_SCALE, config.FLOATING_CUBE_MAX_SCALE
+            scale_t     = mn + (mx_s - mn) * pinch_norm
+            self._scale = self._scale * 0.90 + scale_t * 0.10
+
+            # Suporte inicial a duas maos: escala pela distancia entre elas
+            if len(landmarks) >= 2 and config.FLOATING_CUBE_TWO_HAND_SCALE > 0:
+                lm0 = landmarks[0]
+                lm1 = landmarks[1]
+                ix0 = lm0[self._I_INDEX_TIP].x * w
+                iy0 = lm0[self._I_INDEX_TIP].y * h
+                ix1 = lm1[self._I_INDEX_TIP].x * w
+                iy1 = lm1[self._I_INDEX_TIP].y * h
+                hand_sep  = math.hypot(ix1 - ix0, iy1 - iy0)
+                sep_norm  = min(1.0, hand_sep / max(1.0, w * 0.5))
+                two_scale = mn + (mx_s - mn) * sep_norm
+                infl      = config.FLOATING_CUBE_TWO_HAND_SCALE
+                self._scale = self._scale * (1.0 - infl) + two_scale * infl
+
+        else:
+            # Sem mao: fade out
+            self._alpha = max(0.0, self._alpha - fade_step)
+            self._rvx  *= damp
+            self._rvy  *= damp
+            self._scale = self._scale * 0.95 + 1.0 * 0.05
+            self._prev_idx      = None
+            self._prev_idx_tip  = None
+
+        if self._alpha < 0.005:
+            return frame
+
+        # --- Rotacao acumulada ---
+        self._rx = (self._rx + config.FLOATING_CUBE_IDLE_ROTATION_X + self._rvx) % 360.0
+        self._ry = (self._ry + config.FLOATING_CUBE_IDLE_ROTATION_Y + self._rvy) % 360.0
+        self._rz = (self._rz + config.FLOATING_CUBE_IDLE_ROTATION_Z) % 360.0
+        # Damping gradual da velocidade
+        self._rvx *= damp
+        self._rvy *= damp
+
+        # --- Projecao 3D -> 2D ---
+        size = config.FLOATING_CUBE_SIZE * self._scale
+        fov  = config.FLOATING_CUBE_PERSPECTIVE_FOV
+
+        local_verts = [(vx * size, vy * size, vz * size) for (vx, vy, vz) in self._VERTS]
+        rot_verts   = self._rotate(local_verts, self._rx, self._ry, self._rz)
+        cx          = self._cube_cx
+        cy          = self._cube_cy
+        pts_2d      = self._project(rot_verts, cx, cy, fov)
+
+        # Calcular z medio por aresta (para separar frente/tras)
+        edge_z = []
+        for (i0, i1) in self._EDGES:
+            zm = (rot_verts[i0][2] + rot_verts[i1][2]) * 0.5
+            edge_z.append(zm)
+        z_max = max(edge_z) if edge_z else 1.0
+        z_min = min(edge_z) if edge_z else -1.0
+        z_range = max(1.0, z_max - z_min)
+
+        # --- ROI ao redor do cubo ---
+        all_x = [p[0] for p in pts_2d]
+        all_y = [p[1] for p in pts_2d]
+        pad   = config.FLOATING_CUBE_GLOW_BLUR * 2 + 12
+        x0    = max(0, min(all_x) - pad)
+        y0    = max(0, min(all_y) - pad)
+        x1    = min(w, max(all_x) + pad)
+        y1    = min(h, max(all_y) + pad)
+        rw, rh = x1 - x0, y1 - y0
+
+        if rw < 4 or rh < 4:
+            return frame
+
+        if self._frame_size != (rh, rw):
+            self._canvas     = np.zeros((rh, rw, 3), dtype=np.uint8)
+            self._frame_size = (rh, rw)
+        self._canvas[:] = 0
+
+        a         = config.FLOATING_CUBE_ALPHA * self._alpha
+        col_main  = config.FLOATING_CUBE_COLOR
+        col_back  = config.FLOATING_CUBE_ACCENT_COLOR
+        energy    = self._energy
+
+        for ei, (i0, i1) in enumerate(self._EDGES):
+            p0 = (pts_2d[i0][0] - x0, pts_2d[i0][1] - y0)
+            p1 = (pts_2d[i1][0] - x0, pts_2d[i1][1] - y0)
+
+            # Profundidade visual: arestas traseiras mais escuras
+            z_norm  = (edge_z[ei] - z_min) / z_range   # 0=atras 1=frente
+            bright  = 0.40 + z_norm * 0.60 + energy * 0.20
+            bright  = min(1.0, bright)
+
+            # Interpolar cor entre acento (atras) e principal (frente)
+            col_f  = tuple(
+                min(255, int((col_back[k] * (1.0 - z_norm) + col_main[k] * z_norm) * a * bright))
+                for k in range(3))
+
+            thick = 2 if z_norm > 0.65 else 1
+            cv2.line(self._canvas, p0, p1, col_f, thick, cv2.LINE_AA)
+
+        # Glow aditivo energia-reativo
+        if config.FLOATING_CUBE_GLOW > 0:
+            gk = config.FLOATING_CUBE_GLOW_BLUR
+            gk = gk if gk % 2 == 1 else gk + 1
+            glow_strength = config.FLOATING_CUBE_GLOW * (1.0 + energy * 1.5)
+            glow = cv2.GaussianBlur(self._canvas, (gk, gk), 0)
+            cv2.addWeighted(self._canvas, 1.0, glow, min(glow_strength, 2.5), 0,
+                            dst=self._canvas)
+
+        cv2.add(frame[y0:y1, x0:x1], self._canvas,
+                dst=frame[y0:y1, x0:x1])
+        return frame

@@ -1,3 +1,4 @@
 opencv-python>=4.9.0
 mediapipe>=0.10.30
 numpy>=1.26.0
+mss>=9.0.0

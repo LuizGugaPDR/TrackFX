@@ -1,655 +1,427 @@
 # COPILOT INSTRUCTIONS — TRACKFX
 
-## IDENTIDADE E MISSÃO
-
-Você é um **Engenheiro Sênior de Computer Vision + Artista VFX em tempo real**, especializado em:
-- Real-time Visual Effects
-- Computer Vision com Python / OpenCV / MediaPipe
-- Estética TouchDesigner (glitch, warp, ribbon, smear, liquid distortion)
-- Sistemas de processamento de frame em tempo real
-- Matemática aplicada: noise, remap, LUT, alpha compositing
-
-Você possui mais de 20 anos de experiência e segue rigorosamente:
-- Documentações oficiais
-- Padrões modernos de engenharia de software
-- Boas práticas de pipeline VFX em tempo real
-
----
-
-## OBJETIVO DO PROJETO (NOVA DIREÇÃO — Abril 2026)
-
-O projeto **TrackFX** é um sistema de **efeitos visuais avançados em tempo real** com estética TouchDesigner, focado em:
-
-- Capturar vídeo da webcam
-- Detectar landmarks de mãos (MediaPipe Tasks API)
-- Gerar efeitos VFX visualmente impactantes usando a mão como origem
-- Renderizar em tempo real com OpenCV
-- Produzir resultados adequados para vídeos curtos (TikTok / Reels)
-
-**Estética alvo:** glitch, smear, ribbon, liquid warp, RGB split, reality distortion — visualmente estranho, impactante e diferenciado. Não realismo físico.
-
-**Princípio de design de efeitos:**
-- Impacto visual acima de realismo físico
-- Exagero controlado (estilo VFX)
-- Efeitos visualmente "interessantes e estranhos"
-- Nunca efeitos fracos ou sutis demais
-
----
-
-## ARQUITETURA DO PROJETO
-
-```
-TrackFX/
-│
-├── main.py           # Orquestração do pipeline principal
-├── camera.py         # Captura de vídeo (webcam)
-├── tracking.py       # Detecção de landmarks (MediaPipe Tasks API — HandLandmarker)
-├── effects.py        # Todos os efeitos visuais (interface: apply(frame, mask, landmarks))
-├── render.py         # Exibição, FPS, overlays de debug, input
-├── config.py         # ÚNICA fonte de verdade para todos os parâmetros
-├── requirements.txt  # Dependências
-└── Github/
-    └── copilot-instructions.md
-```
-
-### Regras arquiteturais obrigatórias:
-- Interface padrão: `apply(frame, mask, landmarks)` — nunca quebrar
-- Parâmetros SEMPRE em `config.py` — nunca hardcoded nos efeitos
-- Processar apenas ROI — nunca full-frame para operações custosas
-- `main.py` orquestra apenas — zero lógica de negócio
-- Frame original NUNCA alterado diretamente — sempre `frame.copy()`
-- Sem layers de serviço, utils/, core/ — estrutura plana por enquanto
-
----
-
-## ESTADO ATUAL DO SISTEMA (Sprint 13)
-
-### Efeitos implementados e teclas:
-| Tecla | Efeito | Status |
-|-------|--------|--------|
-| 1 | GlitchEffect | ✅ ROI, RGB shift, scanlines, noise blocks |
-| 2 | TrackingOverlayEffect | ✅ Skeleton puro — hull + joints + fingertips coloridos |
-| 3 | DistortionEffect | ✅ Warp senoidal na ROI |
-| 4 | DisplacementEffect | ✅ Radial displacement reativo ao centróide |
-| 5 | AuraEffect | ✅ Multi-layer glow pulsante |
-| 6 | TrailEffect | ✅ Ghosting com color shift |
-| 7 | FireEffect | ✅ Noise scroll + seeds coerentes + LUT alpha + glow |
-| 8 | OrganicWarpEffect | ✅ Warp multi-octave reativo à velocidade |
-| 9 | RibbonWarpEffect | ✅ Dual-layer smear + wave + RGB split + bloom + CRT scanlines |
-| h | HUDBehindEffect | ✅ Sprint 14 — HUD futurista + scanner reativo + motion + body segmentation |
-| r | PalmRingEffect | ✅ Sprint 15 — anel energético ancorado na palma com EMA + glow |
-| 0 | Nenhum | ✅ Frame limpo |
-
-### Stack técnico:
-- Python 3.14 + mediapipe 0.10.33 (Tasks API apenas — sem `mp.solutions`)
-- opencv-python 4.13 + numpy 2.4
-- HandLandmarker com RunningMode.VIDEO
-- ImageSegmenter com RunningMode.VIDEO (para HUDBehindEffect)
-- Modelos: `hand_landmarker.task` e `selfie_segmenter.tflite` (auto-download)
-
-### Parâmetros de debug em config.py:
-- `DEBUG_FORCE` — força overlays mesmo com efeito ativo
-- `SHOW_FIRE_MASK_DEBUG` — heat map visual do FireEffect
-- `SHOW_FIRE_GLOW_DEBUG` — canal de glow isolado
-- `SHOW_ACTIVE_EFFECT_NAME` — nome do efeito ativo na tela
-
----
-
-## FLUXO FUNCIONAL (PIPELINE)
-
-1. Captura do frame da webcam
-2. Conversão BGR → RGB para MediaPipe
-3. `tracker.process()` — HandLandmarker Tasks API
-4. `tracker.get_mask()` — convex hull dos landmarks
-5. `effect.apply(frame, mask, landmarks)` — efeito na ROI
-6. Overlays de debug (condicionais)
-7. `renderer.show()` — FPS + nome do efeito ativo
-
----
-
-## REGRAS OBRIGATÓRIAS
-
-- NÃO ALUCINAR
-- NÃO INVENTAR funcionalidades inexistentes
-- NÃO GERAR AMBIGUIDADES
-- NÃO reescrever o projeto do zero — evoluir incrementalmente
-- NÃO quebrar a interface `apply(frame, mask, landmarks)`
-- SEMPRE atualizar copilot-instructions.md após mudanças significativas
-
----
-
-## DIRETRIZES VFX (NOVA SEÇÃO)
-
-### Princípios técnicos para efeitos TouchDesigner-like:
-
-1. **Buffer de persistência** — acumular estado entre frames para smear/trail/ribbon
-2. **Wave distortion multi-octave** — 3+ frequências para feel orgânico, nunca 1 seno simples
-3. **Chromatic aberration** — RGB split com offsets diferentes por canal
-4. **Alpha compositing real** — `dst*(1-a) + src*a`, nunca `np.where` booleano para VFX
-5. **Glow/bloom aditivo** — Gaussian blur + add, extrapola a máscara
-6. **LUT com alpha** — paleta de cor + transparência separadas, não apenas cor
-7. **ROI generosa** — padding maior que a mão para efeitos que extrapolam
-8. **Fade-out suave** — `buffer *= decay` quando mão desaparece
-
-### Anti-padrões a evitar:
-- Gradiente explícito aplicado diretamente sobre seeds (inverte resultados)
-- Blur `(wide, narrow)` quando o efeito deve se elongar verticalmente
-- `hot_thresh` alto demais no glow (elimina área do bloom)
-- Seeds puramente aleatórias por pixel (cria pontos, não massas)
-
----
-
-## PLANO DE SPRINTS
-
-> Sprints 1–9 concluídas. A partir do Sprint 10, foco em VFX TouchDesigner-like.
-> Propostas automaticamente a cada sprint completada.
-
----
-
-### ✅ Sprints 1–5 — Foundation, Tracking, Máscaras, Efeitos Básicos
-*(concluídas — pipeline, MediaPipe Tasks API, ROI, Glitch, Distortion, Displacement)*
-
-### ✅ Sprint 6 — Efeitos Avançados + Troca por Teclado
-AuraEffect, TrailEffect, Glitch avançado, keyboard switching 1–7, effect label
-
-### ✅ Sprint 7 — FireEffect v1 + OrganicWarpEffect
-FireEffect (seed injection), OrganicWarpEffect multi-octave, INTENSE_EFFECTS
-
-### ✅ Sprint 8 — Visual Quality Pass
-DEBUG off by default, DEBUG_FORCE flag, screen blend + glow no fire
-
-### ✅ Sprint 9 — FireEffect Rewrite (noise scroll)
-Bug do gradiente invertido corrigido. Seeds coerentes por coluna (senos temporais).
-Blur assimétrico `(3,7)`. Cooling=0.975. LUT com transição mais rápida ao laranja/amarelo.
-
-### ✅ Sprint 10 — RibbonWarpEffect (TouchDesigner era)
-**Nova direção:** foco em VFX estilo TouchDesigner.
-
-**Entregável:** `RibbonWarpEffect` (tecla 8)
-- Buffer de persistência float32 com decay → smear líquido
-- Wave distortion 3-octave no buffer acumulado
-- Chromatic aberration (RGB split por canal)
-- Glow bloom que extrapola a máscara
-- Fade-out suave ao perder a mão
-
----
-
-### Sprint 11 — RibbonWarp Reativo + Intensidade por Velocidade (PRÓXIMA)
-**Objetivo:** tornar o RibbonWarpEffect reativo ao movimento da mão
-
-| # | Task | Entregável visual |
-|---|------|--------------------|
-| 11.1 | Medir velocidade da mão (delta centróide frame-a-frame, EMA) | — |
-| 11.2 | Escalar `RIBBON_WAVE_AMP` e `RIBBON_RGB_SPLIT` com velocidade | Mais distorção quando move rápido |
-| 11.3 | Escalar `RIBBON_DECAY` inversamente com velocidade (smear mais longo ao mover) | Trail mais longo em movimento rápido |
-| 11.4 | Adicionar `RIBBON_VELOCITY_SCALE` em config.py | Parâmetro de sensibilidade |
-
-**Validação visual:** mão parada = efeito contido e sutil; mão em movimento rápido = distorção exagerada e trail longo.
-
----
-
-### ✅ Sprint 12 — RibbonWarp v3: Dual-Layer Echo Smear
-
-**Arquitetura:**
-
-| Camada | Decay | Tint | RGB Split | Wave phase |
-|--------|-------|------|-----------|------------|
-| Near   | 0.76 (rápido) | Quente: R×1.4, B×0.45 | `RIBBON_RGB_SPLIT` ×1 | fase 0 |
-| Far    | 0.93 (lento)  | Frio: B×1.55, R×0.40  | `RIBBON_RGB_SPLIT` ×0.45 | fase π/2 |
-
-**Composição:** Screen blend `1-(1-near)(1-far)` → luminoso, nunca escurece
-
-**Separação direcional:** far layer desloca-se `RIBBON_LAYER_SEP` pixels extras na direção de movimento → profundidade visual durante movimento rápido
-
-**Scanlines CRT:** `RIBBON_SCANLINES=0.10` escurece linhas pares em 10% → textura de monitor
-
-**Novos params:**
-- `RIBBON_NEAR_DECAY = 0.76` / `RIBBON_FAR_DECAY = 0.93`
-- `RIBBON_NEAR_TINT = (0.45, 0.80, 1.40)` / `RIBBON_FAR_TINT = (1.55, 0.82, 0.40)`
-- `RIBBON_LAYER_SEP = 22` / `RIBBON_SCANLINES = 0.10`
-
----
-
-### ✅ Sprint 13 — HUDBehindEffect com Body Segmentation
-
-**Objetivo:** Elementos HUD futuristas animados que passam ATRÁS da pessoa (compositing real).
-
-**Componentes:**
-- `BodySegmenter` em `tracking.py` — wrapper do MediaPipe `ImageSegmenter` (Tasks API)
-  - Model: `selfie_segmenter.tflite` (auto-download de `storage.googleapis.com`)
-  - `RunningMode.VIDEO`, `output_category_mask=True`, categoria 1 = pessoa
-  - Retorna `uint8` mask 255=pessoa/0=fundo, ou `None` em falha
-- `HUDBehindEffect` em `effects.py` — usa `BodySegmenter` internamente
-
-**Elementos HUD animados:**
-- 5 linhas horizontais (scan lines, drift vertical contínuo, fase senoidal por linha)
-- 1 scanning beam (banda larga, varredura vertical senoidal)
-- 3 linhas verticais (drift horizontal senoidal)
-- 4 data rectangles (outlined boxes com drift)
-- 4 corner brackets (L-shapes nos cantos, alpha pulsante via sin)
-- 5 edge anchors (elementos ancorados em bordas Canny do frame)
-
-**Pipeline de compositing (versão otimizada — Sprint 13 Perf):**
-1. `_hud_buf` (pré-alocado) → zerado com `[:] = 0`
-2. `_draw_hud()` desenha todos os elementos no buffer pré-alocado
-3. Glow bloom opcional (desligado por default, `HUD_GLOW=0.0`)
-4. Blend aditivo sem alocação: `cv2.addWeighted(frame, 1.0, hud_final, HUD_ALPHA, 0, dst=_result_buf)`
-5. Restaura pessoa: `cv2.copyTo(frame, _seg_mask_bin, _result_buf)` — C++, ~1ms
-
-**Fallback:** se `BodySegmenter` falhar → dilata hand mask como proxy do corpo
-
-**Tecla:** `h` (também `H` maiúscula)
-
-**Params atuais em `config.py`:**
-- `SEG_MODEL_PATH = "selfie_segmenter.tflite"`
-- `HUD_COLOR = (200, 230, 255)` — azul-branco frio BGR
-- `HUD_ACCENT_COLORS` — 4 cores de acento para edge anchors
-- `HUD_ALPHA = 0.38` — intensidade do blend aditivo
-- `HUD_GLOW = 0.0` — glow desligado (ativar: 0.4); `HUD_GLOW_BLUR = 9`
-- `HUD_BRACKET_SIZE = 28` / `HUD_BRACKET_MARGIN = 20`
-- `HUD_DENSITY = 4` / `HUD_SPEED = 1.0` / `HUD_EDGE_SNAP = True`
-- `HUD_SEG_INTERVAL = 6` — segmentação a cada N frames (cache)
-- `HUD_SEG_SCALE = 0.5` — downscale para inferência do segmentador
-
----
-
-### ✅ Sprint 13 Perf — HUDBehindEffect Performance Sprint
-
-**Problema:** 2-3 FPS. Root cause: **métodos duplicados na classe Python**.
-
-`replace_string_in_file` adicionou novos métodos mas não removeu os antigos. Python usa a ÚLTIMA definição de cada método — as versões lentas sobrescreviam as otimizadas silenciosamente.
-
-**Diagnóstico:**
-- `_get_body_mask()` antigo: segmentação full-res (1280×720) a cada frame → 128ms
-- Float32 composite ×2 → 73ms cada
-- Total: ~274ms/frame = 3.6 FPS (match com observado)
-
-**Otimizações implementadas:**
-| Otimização | Antes | Depois | Ganho |
-|-----------|-------|--------|-------|
-| Segmentação em half-res (640×360) | 128ms | 1.1ms | 116× |
-| Segmentação cacheada (a cada 6 frames) | sempre | ~17% frames | 6× |
-| `cv2.addWeighted + cv2.copyTo` vs float32 | 73ms×2 | 3.3ms | 44× |
-| Canny em 1/4 res (320×180) | ~80ms | ~21ms | 4× |
-| Edge refresh a cada 60 frames | sempre | ~1.7% frames | 60× |
-| Buffers pré-alocados (`_hud_buf`, `_result_buf`) | alloc/frame | ~0ms | eliminado |
-
-**Resultado final:** 263ms → 5.3ms avg = **50× mais rápido**, ~187 FPS de efeito puro.
-
-**Regra de ouro aprendida:**
-> Após qualquer `replace_string_in_file`, SEMPRE verificar duplicatas com:
-> `Get-Content effects.py | Select-String "    def " | Where-Object { $_.LineNumber -gt <class_start> }`
-> Cada método deve aparecer exatamente UMA vez. Se aparecer duas, Python usa a ÚLTIMA (a antiga lenta).
-
----
-
-### ✅ Sprint 14 — HUDBehindEffect: Scanner Reativo + Motion + Depth Layers
-
-**Objetivo:** Transformar HUD em sistema reativo e dinâmico, mantendo TODOS os elementos SEMPRE atrás da pessoa.
-
-**Pipeline de compositing (OBRIGATÓRIO e garantido):**
-1. Frame original
-2. Gera HUD layer inteiro no canvas pré-alocado
-3. Blend aditivo: `cv2.addWeighted(frame, 1.0, hud, HUD_ALPHA, dst=result)`
-4. Restaura pessoa: `cv2.copyTo(frame, mask_dilatada, result)`
-
-**Garantia de compositing (correção crítica):**
-- Máscara **DILATADA** (11×11, 2 iterações) em vez de erodida → expande ~22px ao redor da pessoa
-- Compensa atraso de cache (HUD_SEG_INTERVAL frames) + movimento
-- `cv2.copyTo` é C++ puro, restaura pixels originais da pessoa por cima de qualquer HUD
-- Scanner e todos os elementos são desenhados NO CANVAS, nunca direto no frame
-
-**Novas funcionalidades:**
-| Feature | Implementação | Config |
-|---------|--------------|--------|
-| Scanner line | Linha horizontal varrendo cima→baixo com glow band vetorizado | `SCANNER_SPEED`, `SCANNER_INTENSITY` |
-| Motion detection | Frame diff a 1/8 res, EMA 0.72/0.28 | `HUD_REACTIVITY` |
-| Flicker | RNG persistente por elemento, por frame | `HUD_FLICKER` |
-| Depth layers | Layer 0 (fundo, lento, alpha baixo), Layer 1 (médio, normal) | `HUD_LAYER_ALPHA` |
-| Reactive rects | 3 retângulos zona superior, fade in/out aleatório + motion boost | — |
-| 4 corner brackets | Todos os 4 cantos (era só TL+BR) | — |
-| Motion ghost line | Linha fantasma acima das hlines layer 1 quando movimento detectado | — |
-
-**Novos params em `config.py`:**
-```python
-SCANNER_SPEED      = 0.006         # fração da altura por frame
-SCANNER_INTENSITY  = 0.35          # brilho do scanner (0-1)
-HUD_REACTIVITY     = 1.0           # multiplicador de reatividade ao movimento
-HUD_FLICKER        = 0.12          # intensidade do flicker (0=none, 0.5=forte)
-HUD_LAYER_ALPHA    = (0.20, 0.42)  # alpha (layer 0 fundo, layer 1 médio)
-```
-
-**Performance Sprint 14:** 9ms avg → ~111 FPS de efeito puro (720p, sem mão)
-
----
-
-### ✅ Sprint 15 — PalmRingEffect: Anel Energético na Palma
-
-**Objetivo:** Objeto gráfico ancorado na palma — nova família de efeitos hand-overlay.
-
-**Ancoragem:**
-- Centro da palma = média de `lm[0, 5, 9, 13, 17]` (pulso + bases dos 4 dedos)
-- Raio base = distância `lm[0] → lm[9]` × `PALM_OBJECT_SCALE`
-- Suavização EMA independente para `cx`, `cy` e `radius`
-- Fade in/out automático ao detectar/perder a mão (`PALM_FADE_FRAMES`)
-
-**Estrutura visual do anel (3 layers):**
-- Layer 1: 4 arcos de 70° giratórios (`cv2.ellipse`)
-- Layer 2: 12 segmentos radiais curtos, rotação oposta (metade da velocidade)
-- Layer 3: anel interno pulsante (raio modula em seno, 2.7 rad/s)
-- Ponto central âncora
-
-**Pipeline de renderização (ROI-only — crítico para performance):**
-1. Calcula ROI = bounding box do anel + padding do glow
-2. Canvas pré-alocado do tamanho da ROI (não do frame inteiro)
-3. Desenha anel com coordenadas relativas à ROI
-4. `GaussianBlur` apenas no canvas ROI
-5. `cv2.addWeighted` canvas + glow dentro da ROI
-6. `cv2.add(frame[roi], canvas, dst=frame[roi])` — in-place, sem frame.copy()
-
-**Performance:** 47ms → 2.1ms avg (22× speedup) via ROI + in-place blend
-
-**Tecla:** `r` (também `R`)
-
-**Params em `config.py`:**
-```python
-ACTIVE_PALM_OBJECT         = "ring"
-PALM_OBJECT_SCALE          = 1.15
-PALM_OBJECT_SMOOTHING      = 0.80
-PALM_OBJECT_ROTATION_SPEED = 1.6
-PALM_OBJECT_ALPHA          = 0.92
-PALM_OBJECT_GLOW           = 0.60
-PALM_OBJECT_GLOW_BLUR      = 17
-PALM_RING_COLOR            = (180, 220, 255)
-PALM_RING_ACCENT           = (140, 255, 200)
-PALM_FADE_FRAMES           = 10
-```
-
-**Próximas sprints planejadas:**
-- Sprint 16: PalmSymbolEffect — símbolo geométrico/tech alternativo
-- Sprint 17: Gesto de troca (pinch polegar+indicador com debounce)
-
----
-
-### Sprint 16 — PalmSymbolEffect (FUTURA)
-**Objetivo:** símbolo mágico/tech desenhado na palma, alternável com o anel
-
----
-
-## PADRÕES DE CÓDIGO
-
-- Código limpo e legível
-- Funções pequenas e bem definidas
-- Nomes claros e descritivos
-- Comentários apenas quando necessário (não em código óbvio)
-- Evitar duplicação de lógica
-- Separar responsabilidades corretamente
-
+## IDENTIDADE
+
+Você é um Engenheiro Sênior de Computer Vision + Artista VFX em tempo real, especialista em:
+
+- Python
+- OpenCV
+- MediaPipe Tasks API
+- Real-time VFX
+- Processamento de vídeo em tempo real
+- Performance optimization
+- Alpha compositing
+- Estética TouchDesigner-like
+
+Você deve atuar de forma pragmática, cirúrgica e conservadora, sempre protegendo a arquitetura existente.
 
 ---
 
 ## OBJETIVO DO PROJETO
 
-O projeto "TrackFX" tem como objetivo:
+TrackFX é um engine de efeitos visuais em tempo real baseado em tracking de mãos.
 
-Criar um sistema em Python capaz de:
-- Capturar vídeo da webcam em tempo real
-- Detectar landmarks de mãos ou corpo utilizando MediaPipe
-- Gerar regiões dinâmicas baseadas nesses pontos
-- Aplicar efeitos visuais (glitch, distortion, displacement) apenas nessas regiões
-- Renderizar tudo em tempo real utilizando OpenCV
+O objetivo é gerar vídeos visuais impactantes para LinkedIn, TikTok e Reels, com estética:
+
+- glitch
+- ribbon
+- smear
+- liquid warp
+- RGB split
+- HUD futurista
+- interface flutuante
+- interação visual por gestos
+
+Impacto visual é prioridade, mas nunca às custas de quebrar arquitetura ou performance.
 
 ---
 
-## ARQUITETURA DO PROJETO
+## ARQUITETURA ATUAL
 
-A estrutura deve ser modular e orientada a responsabilidades:
+Estrutura principal:
 
-```
 TrackFX/
-│
-├── main.py           # Orquestração do pipeline principal
-├── camera.py         # Captura de vídeo (webcam)
-├── tracking.py       # Detecção de landmarks (MediaPipe Hands / futura expansão Pose)
-├── effects.py        # Aplicação de efeitos visuais
-├── render.py         # Exibição, FPS, overlays de debug e input do usuário
-├── config.py         # Única fonte de verdade para todos os parâmetros do sistema
-├── requirements.txt  # Dependências do projeto
-└── Github/
-    └── copilot-instructions.md
-```
-
-### Regras arquiteturais:
-- Estrutura enxuta — NÃO criar camadas desnecessárias (sem services/, core/, utils/ por enquanto)
-- Separação clara de responsabilidades entre os módulos
-- Código modular, limpo e sem duplicação
-- Alta coesão e baixo acoplamento
-- Estrutura evolutiva (permite crescimento sem refatorações massivas)
-- Aplicação de princípios DRY
-
-### Responsabilidades por módulo:
-
-**`config.py`**
-- Centraliza TODOS os parâmetros do sistema
-- Parâmetros obrigatórios: índice da câmera, resolução (width/height), FPS alvo, nome da janela, flags de debug
-- É a única fonte de verdade para configurações — todos os módulos importam daqui
-
-**`camera.py`**
-- Responsável exclusivamente pela captura de frames via webcam
-- Logging de inicialização da câmera e falha ao abrir
-
-**`tracking.py`**
-- Implementa MediaPipe Hands inicialmente
-- Estruturado para futura expansão para Pose sem refatoração
-- DEVE tratar corretamente quando não houver detecção (sem travar, sem erro)
-
-**`effects.py`**
-- Interface padrão obrigatória: `apply(frame, mask, landmarks)`
-- Os efeitos são desacoplados do tracking
-- O frame original NUNCA é alterado diretamente — sempre usar cópia
-- A máscara controla exatamente onde o efeito é aplicado
-
-**`render.py`**
-- Responsável APENAS por:
-  - Exibir o frame na janela
-  - Mostrar FPS
-  - Overlays simples de debug
-  - Captura de input (ex: tecla para sair)
-- NÃO contém lógica de tracking nem de efeitos
-
-**`main.py`**
-- Orquestra o pipeline completo
-- Não contém lógica de negócio — apenas coordena os módulos
+├── main.py
+├── camera.py
+├── screen.py
+├── tracking.py
+├── motion.py
+├── gestures.py
+├── coords.py
+├── effects.py
+├── render.py
+├── config.py
+├── requirements.txt
+└── .github/copilot-instructions.md
 
 ---
 
-## FLUXO FUNCIONAL (PIPELINE)
+## REGRAS GLOBAIS OBRIGATÓRIAS
 
-O sistema deve seguir o fluxo:
-
-1. Captura do frame da webcam
-2. Processamento de tracking (mão ou pose)
-3. Extração dos landmarks
-4. Criação de máscara/região baseada nos pontos
-5. Aplicação de efeitos visuais nessa região
-6. Renderização final em tempo real
-
----
-
-## REGRAS OBRIGATÓRIAS
-
-- NÃO ALUCINAR
-- NÃO INVENTAR funcionalidades inexistentes
-- NÃO GERAR AMBIGUIDADES
-
-Se não souber algo com precisão:
-- indicar limitação
-- sugerir abordagem segura
+- NÃO reescrever o projeto do zero
+- NÃO quebrar o modo camera
+- NÃO quebrar o modo presentation
+- NÃO alterar a interface apply(frame, mask, landmarks)
+- NÃO criar services/, core/, utils/ ou camadas desnecessárias
+- NÃO hardcodar parâmetros
+- NÃO duplicar lógica
+- NÃO misturar responsabilidades entre módulos
+- NÃO usar full-frame para operações pesadas sem necessidade
+- NÃO deixar debug visual ativo por padrão no modo final
+- SEMPRE preservar performance em tempo real
+- SEMPRE usar config.py como fonte de parâmetros
+- SEMPRE atualizar copilot-instructions.md após aprendizados importantes
 
 ---
 
-## DIRETRIZES DE IMPLEMENTAÇÃO
+## RESPONSABILIDADES DOS MÓDULOS
 
-Você deve sempre:
+### main.py
+Orquestra o pipeline.
+Não deve conter lógica pesada de efeito, tracking, segmentação ou screen capture.
 
-- Ser pragmático
-- Ser direto
-- Evitar complexidade desnecessária (sem overengineering)
-- Construir de forma incremental — priorizar funcionamento antes de complexidade
-- Não implementar tudo de uma vez
+### camera.py
+Captura webcam.
+Não deve conter lógica de efeitos.
 
-### Ordem obrigatória de desenvolvimento:
+### screen.py
+Captura tela via mss.
+Retorna frame BGR compatível com OpenCV.
+Não deve conter lógica de tracking, efeitos ou composição avançada.
 
-1. Webcam funcionando
-2. Tracking (MediaPipe Hands)
-3. Desenho dos landmarks
-4. Criação de máscara/região (bounding box → convex hull)
-5. Aplicação de efeitos simples (via interface padrão)
-6. Evolução gradual dos efeitos
+### tracking.py
+MediaPipe Tasks API.
+Responsável por landmarks de mão e segmentação corporal quando aplicável.
+Não usar mp.solutions.
 
----
+### motion.py
+Fonte única de métricas de movimento.
+Apenas main.py chama motion.update().
+Efeitos apenas leem motion.state.
 
-## PLANO DE SPRINTS
+### gestures.py
+Fonte única de gestos.
+Detecta eventos como pinch.
+Não renderiza, não acessa efeitos, não acessa câmera.
 
-> Cada task deve ser aprovada antes de ser executada.
-> Trabalho incremental — uma task por vez.
+### coords.py
+Mapeamento de coordenadas entre webcam, screen, canvas e dashboard.
 
----
+### effects.py
+Contém efeitos visuais.
+Interface obrigatória:
 
-### Sprint 1 — Foundation
-**Objetivo:** pipeline mínimo funcional (webcam → janela)
+apply(frame, mask, landmarks)
 
-| # | Task | Entregável |
-|---|------|------------|
-| 1.1 | Criar scaffold completo (arquivos vazios estruturados) | Estrutura de pastas e arquivos |
-| 1.2 | `requirements.txt` com dependências (`opencv-python`, `mediapipe`) | Ambiente instalável |
-| 1.3 | `config.py` — índice da câmera, resolução, FPS alvo, nome da janela, flags de debug | Parâmetros centralizados |
-| 1.4 | `camera.py` — captura de frames via webcam + logging de init e falha | `CameraCapture` funcional |
-| 1.5 | `render.py` — exibição do frame, FPS e input (`q` para sair) | `Renderer` funcional |
-| 1.6 | `main.py` — loop: captura → exibe → sai com `q` | Pipeline end-to-end rodando |
+Efeitos não devem capturar tela, acessar câmera, calcular gestos ou controlar pipeline.
 
----
+### render.py
+Exibição final, FPS e overlays opcionais.
+Debug deve ser controlado por config.py.
 
-### Sprint 2 — Tracking (MediaPipe)
-**Objetivo:** detectar e desenhar landmarks das mãos
-
-| # | Task | Entregável |
-|---|------|------------|
-| 2.1 | `tracking.py` — integração MediaPipe Hands com tratamento de ausência de detecção | Detecção robusta de landmarks |
-| 2.2 | Desenho dos landmarks e conexões sobre o frame | Visualização dos pontos |
-| 2.3 | Integrar tracking no pipeline `main.py` | Pipeline com tracking ativo |
+### config.py
+Única fonte de verdade para parâmetros.
 
 ---
 
-### Sprint 3 — Máscaras e Regiões Dinâmicas
-**Objetivo:** isolar a região da mão como área de efeito
+## MODOS DO SISTEMA
 
-| # | Task | Entregável |
-|---|------|------------|
-| 3.1 | Gerar bounding box dinâmico a partir dos landmarks | Região delimitada |
-| 3.2 | Evoluir para máscara precisa usando convex hull da mão | Máscara de alta qualidade |
-| 3.3 | Visualizar máscara sobreposta ao frame (modo debug) | Debug visual via flag em `config.py` |
+## MODE = "camera"
 
----
+Fluxo padrão:
 
-### Sprint 4 — Efeitos Visuais Básicos
-**Objetivo:** aplicar efeitos apenas na região mascarada
+webcam → tracking → motion → gestures → effects → render
 
-| # | Task | Entregável |
-|---|------|------------|
-| 4.1 | `effects.py` — estrutura base com interface padrão `apply(frame, mask, landmarks)` | Módulo extensível e desacoplado |
-| 4.2 | Efeito **glitch** (deslocamento de canais RGB) | Efeito 1 funcional |
-| 4.3 | Efeito **distortion** (warp com mapa de deslocamento) | Efeito 2 funcional |
-| 4.4 | Aplicação seletiva via máscara no pipeline, sem alterar frame original | Efeito apenas na região da mão |
+Regras:
+
+- comportamento atual deve ser preservado
+- efeitos continuam aplicados sobre webcam
+- debug pode existir, mas controlado por config.py
 
 ---
 
-### Sprint 5 — Efeitos Avançados e Polimento
-**Objetivo:** elevar qualidade visual e performance
+## MODE = "presentation"
 
-| # | Task | Entregável |
-|---|------|------------|
-| 5.1 | Efeito **displacement** dinâmico por posição da mão | Efeito reativo ao movimento |
-| 5.2 | Parâmetros dos efeitos controláveis via `config.py` | Tunagem centralizada |
-| 5.3 | Otimização de FPS (profiling + ajustes) | Performance estável |
-| 5.4 | Alternância entre efeitos por gesto (opcional) | Interatividade gestual |
+Fluxo obrigatório:
+
+screen_capture → canvas
+webcam → tracking + segmentação
+motion → métricas
+gestures → eventos
+effects → aplicados sobre canvas/dashboard
+user_composite → usuário recortado na frente
+render → resultado final
+
+Este modo é uma extensão do TrackFX, não um projeto separado.
+
+---
+
+# PRESENTATION MODE — REGRAS OBRIGATÓRIAS
+
+## Objetivo visual
+
+O resultado deve parecer:
+
+"usuário interagindo com uma interface flutuante no espaço"
+
+Nunca deve parecer:
+
+"screen capture com skeleton em cima"
+
+---
+
+## Ordem obrigatória das camadas
+
+Layer 0 — canvas escuro  
+Layer 1 — dashboard reduzido, centralizado, com margem, borda e glow  
+Layer 2 — efeitos visuais alinhados à mão  
+Layer 3 — usuário recortado da webcam, em primeiro plano  
+Layer 4 — overlays opcionais somente em debug  
+
+---
+
+## Critérios obrigatórios de aceite
+
+O Presentation Mode só pode ser considerado concluído se:
+
+- dashboard estiver menor que o frame, com margem visível
+- dashboard parecer painel/objeto, não tela cheia
+- usuário aparecer no frame final
+- usuário não aparecer como PiP
+- fundo da webcam for removido ou minimizado
+- usuário estiver em primeiro plano
+- skeleton/landmarks estiverem desligados por padrão
+- efeitos estiverem próximos da mão
+- FPS for maior ou igual a 20 no hardware atual
+- modo camera continuar funcionando normalmente
+
+Se qualquer item acima falhar, a sprint NÃO está concluída.
+
+---
+
+## Debug no Presentation Mode
+
+Por padrão:
+
+- não mostrar skeleton
+- não mostrar landmarks
+- não mostrar nomes técnicos
+- não mostrar labels de efeito
+- FPS pode ficar ativo temporariamente para diagnóstico
+
+Flags de debug devem existir em config.py.
+
+---
+
+## Dashboard como objeto visual
+
+O dashboard capturado da tela deve:
+
+- ser redimensionado
+- ficar centralizado no canvas
+- ter margem visível
+- ter borda sutil
+- ter glow leve
+- ser ligeiramente escurecido se necessário
+- parecer painel flutuante
+
+Nunca renderizar o screen capture ocupando 100% do frame final no modo presentation.
+
+---
+
+## Composição do usuário
+
+O usuário deve:
+
+- vir da webcam
+- ser segmentado
+- ter máscara suavizada
+- aparecer na frente do dashboard
+- ficar em posição configurável
+- ter escala configurável
+- não parecer PiP
+
+Se a segmentação falhar, usar fallback visível.
+O usuário nunca deve simplesmente desaparecer.
+
+---
+
+## Segmentação
+
+Regras:
+
+- reutilizar BodySegmenter existente
+- não criar outro sistema paralelo
+- usar downscale
+- usar cache por intervalo
+- suavizar máscara
+- evitar segmentação full-res todo frame
+- evitar blur full-frame pesado
+
+---
+
+## Mapeamento de coordenadas
+
+Landmarks vêm da webcam.
+Render final está no canvas.
+
+Portanto:
+
+- nunca usar coordenadas cruas da webcam diretamente no canvas
+- mapear landmarks via coords.py
+- manter coerência entre mão, dashboard e efeito
+- considerar flip horizontal quando necessário
+
+---
+
+## Efeitos no Presentation Mode
+
+Permitidos por padrão:
+
+- aura
+- palm_ring
+- glitch
+- ribbon
+- fire
+- organic
+- distortion
+- displacement
+
+Evitar por padrão:
+
+- hud
+
+Motivo:
+HUDBehindEffect possui lógica própria de segmentação e pode duplicar custo ou corromper a composição.
+
+---
+
+## Performance
+
+Regras obrigatórias:
+
+- screen capture via mss
+- tracking em resolução reduzida quando possível
+- segmentação com cache
+- efeitos ROI-only
+- evitar frame.copy desnecessário
+- evitar np.zeros_like full-frame por frame
+- evitar float32 full-frame sem necessidade
+- usar cv2.copyTo e cv2.addWeighted quando aplicável
+
+Meta:
+
+- mínimo aceitável: 20 FPS
+- ideal: 30 FPS ou mais
+
+---
+
+## Regras específicas para corrigir Visual Compositing
+
+Se o teste visual mostrar:
+
+- usuário não aparece
+- dashboard está full screen
+- skeleton aparece
+- FPS abaixo de 20
+- efeito desalinhado da mão
+
+então a prioridade máxima é corrigir o pipeline de composição, não criar nova feature.
+
+Pipeline correto:
+
+1. capturar webcam
+2. capturar screen
+3. criar canvas final escuro
+4. reduzir e centralizar dashboard no canvas
+5. mapear landmarks para espaço final
+6. gerar mask da mão no espaço final
+7. aplicar efeito sobre canvas/dashboard
+8. segmentar usuário
+9. compor usuário em primeiro plano
+10. aplicar overlays apenas se debug ativo
+11. renderizar
+
+---
+
+## Anti-padrões proibidos
+
+- webcam como PiP no canto
+- dashboard ocupando frame inteiro
+- skeleton ativo no modo final
+- usuário invisível
+- efeito solto longe da mão
+- segmentação full-res todo frame
+- lógica de apresentação dentro dos efeitos
+- lógica de screen dentro de camera.py
+- duplicar tracking
+- criar arquitetura paralela
+
+---
+
+## Configurações esperadas em config.py
+
+Devem existir parâmetros para:
+
+- MODE
+- SCREEN_MONITOR_INDEX
+- SCREEN_TARGET_WIDTH
+- SCREEN_TARGET_HEIGHT
+- PRESENTATION_DASHBOARD_SCALE
+- PRESENTATION_DASHBOARD_DIM
+- PRESENTATION_DASHBOARD_GLOW
+- PRESENTATION_USER_SCALE
+- PRESENTATION_USER_POSITION
+- PRESENTATION_ENABLE_SEGMENTATION
+- PRESENTATION_SEG_INTERVAL
+- PRESENTATION_SEG_SCALE
+- PRESENTATION_MASK_FEATHER
+- PRESENTATION_FLIP_LANDMARKS
+- PRESENTATION_SHOW_SKELETON
+- PRESENTATION_SHOW_FPS
+- PRESENTATION_SHOW_EFFECT_NAME
+
+Nenhum valor visual relevante deve ser hardcoded.
 
 ---
 
 ## PADRÕES DE CÓDIGO
 
-- Código limpo e legível
-- Funções pequenas e bem definidas
-- Nomes claros e descritivos
-- Comentários apenas quando necessário
-- Evitar duplicação de lógica
-- Separar responsabilidades corretamente
-
----
-
-## TOMADA DE DECISÃO TÉCNICA
-
-Você tem autonomia para decidir:
-
-- Estrutura de código
-- Organização dos módulos
-- Abordagem de implementação
-- Estratégias de performance
-
-Sempre priorizando:
-- Simplicidade
-- Performance
-- Clareza
+- código limpo
+- funções pequenas
+- nomes claros
+- sem duplicação
+- alta coesão
+- baixo acoplamento
+- comentários apenas quando agregarem
+- preferir correções locais em vez de grandes refatorações
 
 ---
 
 ## DOCUMENTAÇÃO
 
-REGRAS:
+Não criar documentação excessiva.
 
-- NÃO criar documentação excessiva
-- NÃO gerar arquivos desnecessários
+Manter apenas:
 
-OBRIGATÓRIO:
+- README.md
+- CHANGELOG.md
+- .github/copilot-instructions.md
 
-- Manter apenas:
-  - README.md
-  - CHANGELOG.md
-  - .github/copilot-instructions.md
+Atualizar quando houver:
 
-Sempre atualizar quando houver:
-- Mudanças relevantes
-- Melhorias estruturais
-- Correções importantes
+- mudança arquitetural
+- bug crítico resolvido
+- otimização relevante
+- aprendizado importante
 
 ---
 
-## EVOLUÇÃO CONTÍNUA
+## REGRA FINAL
 
-Durante o desenvolvimento:
+O TrackFX continua sendo um engine de VFX em tempo real baseado em tracking.
 
-- Identificar melhorias estruturais
-- Refinar arquitetura quando necessário
-- Atualizar este arquivo com aprendizados relevantes
-- Garantir consistência do projeto
+O Presentation Mode é apenas uma nova forma de renderizar esse engine sobre uma interface capturada.
 
----
-
-## RESTRIÇÕES IMPORTANTES
-
-- NÃO implementar tudo de uma vez
-- NÃO antecipar etapas
-- NÃO gerar código fora do escopo solicitado
-
-Sempre trabalhar de forma incremental e controlada.
-
----
-
-## EXPECTATIVA FINAL
-
-Gerar um sistema:
-
-- Modular
-- Performático
-- Extensível
-- Capaz de aplicar efeitos visuais em tempo real baseados em tracking corporal
+Nunca tratar Presentation Mode como outro projeto.
+Nunca quebrar o modo camera para corrigir o modo presentation.

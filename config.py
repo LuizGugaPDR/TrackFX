@@ -158,3 +158,68 @@ SCANNER_INTENSITY  = 0.35          # brilho da linha do scanner (0=off, 1=máxim
 HUD_REACTIVITY     = 1.0           # multiplicador de reatividade ao movimento da cena
 HUD_FLICKER        = 0.12          # intensidade do flicker aleatório (0=none, 0.5=forte)
 HUD_LAYER_ALPHA    = (0.20, 0.42)  # alpha por camada: (layer 0 fundo, layer 1 médio)
+
+# GestureDetector — Sprint 16: controle por gesto (pinch)
+PINCH_THRESHOLD      = 0.28   # distância normalizada (pinch_dist/hand_size) para ativar
+PINCH_HOLD_FRAMES    = 4      # frames consecutivos para confirmar o pinch (~133ms a 30fps)
+PINCH_COOLDOWN_FRAMES = 20    # frames de bloqueio após disparar (~667ms a 30fps)
+SHOW_PINCH_INDICATOR = True   # indicador visual entre polegar e indicador
+GESTURE_EFFECT_CYCLE = [      # ordem de troca de efeito por pinch
+    "glitch", "distortion", "displacement", "aura",
+    "trail", "fire", "organic", "ribbon", "hud", "palm_ring",
+]
+
+# MotionTracker — motion.py: metricas globais de movimento da mao
+MOTION_VEL_EMA   = 0.72   # EMA de velocidade (0=sem suavizacao, 1=maximo)
+MOTION_ACCEL_EMA = 0.80   # EMA de aceleracao (mais alto = mais suave)
+MOTION_SPEED_MAX = 25.0   # pixels/frame que corresponde a speed=1.0
+MOTION_DEAD_ZONE = 2.0    # pixels/frame abaixo dos quais speed=0 (elimina jitter)
+
+# ---------------------------------------------------------------------------
+# Modo de operação ("camera" | "presentation")
+# ---------------------------------------------------------------------------
+MODE = "camera"  # altera aqui para ativar o Presentation Mode
+
+# --- Screen Capture (presentation mode) ---
+SCREEN_MONITOR_INDEX  = 1      # 1 = monitor principal (mss usa índice 1-based)
+SCREEN_TARGET_WIDTH   = 1280
+SCREEN_TARGET_HEIGHT  = 720
+
+# --- Presentation Mode ---
+PRESENTATION_SHOW_WEBCAM         = False          # desativado — usuário composto em full-frame (T3)
+PRESENTATION_WEBCAM_SCALE        = 0.35           # reservado (PiP desativado)
+PRESENTATION_WEBCAM_POS          = "bottom_right" # reservado (PiP desativado)
+PRESENTATION_ENABLE_SEGMENTATION = True           # recorte do usuário via BodySegmenter
+PRESENTATION_FLIP_LANDMARKS      = True           # inverte eixo X (webcam espelhada vs. screen)
+
+# ---------------------------------------------------------------------------
+# Visual Compositing — camadas de profundidade (T1, T2, T4, T7)
+# ---------------------------------------------------------------------------
+
+# T1 — Dashboard como objeto visual (painel flutuante centralizado)
+PRES_DASHBOARD_SCALE       = 0.55    # tamanho do painel dentro do frame (0.50–0.80)
+PRES_BG_COLOR              = (8, 10, 16)    # cor BGR do canvas de fundo (quase preto azulado)
+PRES_PANEL_BORDER          = True           # borda sutil ao redor do painel
+PRES_PANEL_BORDER_COLOR    = (55, 95, 155)  # cor da borda — azul-aço suave
+PRES_PANEL_GLOW            = 0.22           # intensidade do glow na borda (0=off)
+
+# T4/T7 — Tratamento de camadas para profundidade visual
+PRES_DASHBOARD_DIM         = 0.76    # brilho do dashboard relativo ao usuário (fundo menos chamativo)
+PRES_USER_BRIGHTNESS       = 1.10    # boost de brilho do usuário (destaque Layer 3)
+
+# T2 — Suavização da borda do recorte do usuário
+PRES_MASK_FEATHER          = 7       # raio do blur de feathering da máscara (px, ímpar)
+
+# T5 — Poluição visual
+PRES_SHOW_EFFECT_NAME      = False   # esconde label do efeito ativo no presentation mode
+PRES_SHOW_FPS              = True    # mantém FPS visível para monitoramento
+
+# Performance + composição visual
+PRES_ACTIVE_EFFECT         = "palm_ring"  # palm_ring: anel geométrico, sem skeleton aparente. NÃO usar hud.
+PRES_TRACK_SCALE           = 0.5     # reservado — presentation mode usa PRES_CAM como resolução base
+PRES_USER_WIDTH_SCALE      = 0.50    # largura do usuário como fração do screen_w
+PRES_USER_SIDE             = "right" # posição do usuário: "right" | "left" | "center"
+PRES_USER_MARGIN           = 0       # margem da borda em pixels
+PRES_CAM_WIDTH             = 640     # resolução da webcam em presentation mode (mais rápido que 1280×720)
+PRES_CAM_HEIGHT            = 360     # idem (altura)
+PRES_SEG_INTERVAL          = 6       # segmentação a cada N frames (12 era muito lento → mask velha)

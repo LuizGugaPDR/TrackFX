@@ -10,6 +10,7 @@ import math
 import time
 import cv2
 import numpy as np
+import motion
 import config
 from tracking import HAND_CONNECTIONS, BodySegmenter
 
@@ -30,13 +31,11 @@ def _get_mask_roi(mask):
 
 
 def _blend_roi(frame, processed_roi, mask, x1, y1, x2, y2):
-    """Cola ROI processada de volta no frame usando a mÃ¡scara como alpha."""
-    result = frame.copy()
+    """Cola ROI processada de volta no frame in-place usando a mascara como alpha."""
     roi_mask = mask[y1:y2, x1:x2]
-    roi_mask_3ch = cv2.merge([roi_mask, roi_mask, roi_mask])
-    region = result[y1:y2, x1:x2]
-    result[y1:y2, x1:x2] = np.where(roi_mask_3ch > 0, processed_roi, region)
-    return result
+    mask_bool = roi_mask[:, :, np.newaxis].astype(bool)
+    np.copyto(frame[y1:y2, x1:x2], processed_roi, where=mask_bool)
+    return frame
 
 
 # ---------------------------------------------------------------------------
@@ -127,11 +126,6 @@ class DisplacementEffect:
         self._smooth_cx = None
         self._smooth_cy = None
 
-    def _centroid(self, landmarks, h, w):
-        xs = [lm.x * w for hand in landmarks for lm in hand]
-        ys = [lm.y * h for hand in landmarks for lm in hand]
-        return float(np.mean(xs)), float(np.mean(ys))
-
     def apply(self, frame, mask, landmarks):
         if mask is None or not np.any(mask) or not landmarks:
             return frame
@@ -141,7 +135,7 @@ class DisplacementEffect:
         x1, y1, x2, y2 = roi
 
         h, w = frame.shape[:2]
-        cx, cy = self._centroid(landmarks, h, w)
+        cx, cy = motion.state.cx, motion.state.cy
         decay = config.DISPLACEMENT_DECAY
         if self._smooth_cx is None:
             self._smooth_cx, self._smooth_cy = cx, cy
@@ -196,36 +190,63 @@ class AuraEffect:
         blur_base = config.AURA_BLUR_BASE
         intensity = config.AURA_INTENSITY * pulse
 
-        result = frame.copy()
         h, w = frame.shape[:2]
 
-        # MÃ¡scara colorida base
-        color_layer = np.zeros((h, w, 3), dtype=np.uint8)
-        color_layer[mask > 0] = color_bgr
+        # ROI expandida: padding = raio maximo do maior kernel
+        # Garante que o glow calculado na ROI e identico ao full-frame
+        max_ks = blur_base + (layers - 1) * 20   # kernel maximo (ex: 105)
+        pad    = max_ks // 2 + 6
 
-        # ComposiÃ§Ã£o em camadas â€” cada camada dilata e blura mais
-        glow = np.zeros((h, w, 3), dtype=np.float32)
+        ys, xs = np.where(mask > 0)
+        if len(xs) == 0:
+            return frame
+
+        x1 = max(0, int(xs.min()) - pad)
+        y1 = max(0, int(ys.min()) - pad)
+        x2 = min(w, int(xs.max()) + pad)
+        y2 = min(h, int(ys.max()) + pad)
+        rw, rh = x2 - x1, y2 - y1
+
+        # Mascara colorida apenas na ROI
+        mask_roi  = mask[y1:y2, x1:x2]
+        color_roi = np.zeros((rh, rw, 3), dtype=np.uint8)
+        color_roi[mask_roi > 0] = color_bgr
+
+        # Composicao multi-camada -- camadas pequenas em full-res,
+        # camadas grandes em half-res (4x menos pixels, visual identico)
+        glow = np.zeros((rh, rw, 3), dtype=np.float32)
+        half_w = max(4, rw // 2)
+        half_h = max(4, rh // 2)
+        color_half = cv2.resize(color_roi, (half_w, half_h), interpolation=cv2.INTER_LINEAR)
+        HALF_THRESH = 3  # camadas >= HALF_THRESH usam half-res
         for i in range(1, layers + 1):
-            # Dilata a mÃ¡scara proporcionalmente Ã  camada
-            kernel_size = blur_base + (i - 1) * 20
-            kernel_size = kernel_size if kernel_size % 2 == 1 else kernel_size + 1
-            blurred = cv2.GaussianBlur(color_layer, (kernel_size, kernel_size), 0)
-            weight = intensity * (1.0 / i)
+            ks = blur_base + (i - 1) * 20
+            ks = ks if ks % 2 == 1 else ks + 1
+            weight = intensity / i
+            if i >= HALF_THRESH:
+                # Half-res: kernel efetivo = ks//2, resultado upsampled
+                ks_h = max(3, ks // 2)
+                ks_h = ks_h if ks_h % 2 == 1 else ks_h + 1
+                blurred_h = cv2.GaussianBlur(color_half, (ks_h, ks_h), 0)
+                blurred = cv2.resize(blurred_h, (rw, rh), interpolation=cv2.INTER_LINEAR)
+            else:
+                blurred = cv2.GaussianBlur(color_roi, (ks, ks), 0)
             glow += blurred.astype(np.float32) * weight
 
-        glow = np.clip(glow, 0, 255).astype(np.uint8)
+        glow_u8 = np.clip(glow, 0, 255).astype(np.uint8)
 
-        # Adiciona glow ao frame (screen blend simplificado)
-        result = cv2.add(result, glow)
+        # Glow aditivo in-place na ROI do frame
+        cv2.add(frame[y1:y2, x1:x2], glow_u8, dst=frame[y1:y2, x1:x2])
 
-        # ReforÃ§a a cor sobre a regiÃ£o da mÃ£o
-        mask_3ch = cv2.merge([mask, mask, mask])
-        hand_tint = np.zeros_like(result)
-        hand_tint[mask > 0] = color_bgr
-        hand_tint = cv2.GaussianBlur(hand_tint, (blur_base, blur_base), 0)
-        result = cv2.addWeighted(result, 1.0, hand_tint, 0.4 * pulse, 0)
+        # Tint da mao in-place na ROI
+        tint_roi = np.zeros((rh, rw, 3), dtype=np.uint8)
+        tint_roi[mask_roi > 0] = color_bgr
+        ks_b = blur_base if blur_base % 2 == 1 else blur_base + 1
+        tint_blur = cv2.GaussianBlur(tint_roi, (ks_b, ks_b), 0)
+        cv2.addWeighted(frame[y1:y2, x1:x2], 1.0, tint_blur, 0.4 * pulse, 0,
+                        dst=frame[y1:y2, x1:x2])
 
-        return result
+        return frame
 
 
 # ---------------------------------------------------------------------------
@@ -453,21 +474,26 @@ class FireEffect:
             glow_mask  = (heat_up > hot_thresh).astype(np.float32)[:, :, np.newaxis]
             glow_src   = np.clip(fire_bgr.astype(np.float32) * glow_mask, 0, 255).astype(np.uint8)
 
-            glow_full  = np.zeros_like(frame)
-            glow_full[y1:y2, x1:x2] = glow_src
-
             gk = config.FIRE_GLOW_BLUR
             gk = gk if gk % 2 == 1 else gk + 1
-            glow_blur = cv2.GaussianBlur(glow_full, (gk, gk), 0)
+            # Glow em ROI com padding -- evita blur no frame completo
+            fh, fw = frame.shape[:2]
+            pad_g = gk // 2 + 2
+            gx0  = max(0, x1 - pad_g); gy0  = max(0, y1 - pad_g)
+            gx1e = min(fw, x2 + pad_g); gy1e = min(fh, y2 + pad_g)
+            glow_roi_buf = np.zeros((gy1e - gy0, gx1e - gx0, 3), dtype=np.uint8)
+            ox, oy = x1 - gx0, y1 - gy0
+            glow_roi_buf[oy:oy + rh, ox:ox + rw] = glow_src
+            glow_blurred = cv2.GaussianBlur(glow_roi_buf, (gk, gk), 0)
 
             if config.SHOW_FIRE_GLOW_DEBUG:
-                # Exibe o canal de glow isolado (sem compor com o frame)
-                result = np.clip(glow_blur.astype(np.float32) * 3.0, 0, 255).astype(np.uint8)
+                result[gy0:gy1e, gx0:gx1e] = np.clip(
+                    glow_blurred.astype(np.float32) * 3.0, 0, 255).astype(np.uint8)
             else:
-                result = np.clip(
-                    result.astype(np.float32) + glow_blur.astype(np.float32) * config.FIRE_GLOW_INTENSITY,
-                    0, 255
-                ).astype(np.uint8)
+                result[gy0:gy1e, gx0:gx1e] = np.clip(
+                    result[gy0:gy1e, gx0:gx1e].astype(np.float32) +
+                    glow_blurred.astype(np.float32) * config.FIRE_GLOW_INTENSITY,
+                    0, 255).astype(np.uint8)
 
         # ---- 10. Debug: heat map em falso colorido ----
         if config.SHOW_FIRE_MASK_DEBUG:
@@ -503,18 +529,9 @@ class OrganicWarpEffect:
 
     def __init__(self):
         self._t = 0.0
-        self._prev_cx = None
-        self._prev_cy = None
-        self._velocity = 0.0
-
-    def _centroid(self, landmarks, h, w):
-        xs = [lm.x * w for hand in landmarks for lm in hand]
-        ys = [lm.y * h for hand in landmarks for lm in hand]
-        return float(np.mean(xs)), float(np.mean(ys))
 
     def apply(self, frame, mask, landmarks):
         if mask is None or not np.any(mask):
-            self._velocity *= 0.85
             return frame
 
         roi = _get_mask_roi(mask)
@@ -522,22 +539,14 @@ class OrganicWarpEffect:
             return frame
         x1, y1, x2, y2 = roi
 
-        # Velocidade da mÃ£o â†’ amplitude do warp
         h, w = frame.shape[:2]
-        if landmarks:
-            cx, cy = self._centroid(landmarks, h, w)
-            if self._prev_cx is not None:
-                speed = math.sqrt((cx - self._prev_cx) ** 2 + (cy - self._prev_cy) ** 2)
-                self._velocity = min(1.0, self._velocity * 0.7 + (speed / 30.0) * 0.3)
-            self._prev_cx, self._prev_cy = cx, cy
-
         self._t += config.ORGANIC_FREQ_TEMPORAL * 0.033
 
         region = frame[y1:y2, x1:x2].copy()
         rh, rw = region.shape[:2]
         t  = self._t
         fs = config.ORGANIC_FREQ_SPATIAL
-        amp = config.ORGANIC_AMPLITUDE * (0.5 + 1.0 * self._velocity)
+        amp = config.ORGANIC_AMPLITUDE * (0.5 + 1.0 * motion.state.speed)
 
         gx, gy = np.meshgrid(np.arange(rw, dtype=np.float32),
                              np.arange(rh, dtype=np.float32))
@@ -583,11 +592,6 @@ class RibbonWarpEffect:
         self._far         = None
         self._far_alpha   = None
         self._t           = 0.0
-        self._prev_cx     = None
-        self._prev_cy     = None
-        self._vx          = 0.0
-        self._vy          = 0.0
-        self._speed       = 0.0
 
     # ------------------------------------------------------------------
     def _get_roi(self, mask, frame_shape):
@@ -602,30 +606,8 @@ class RibbonWarpEffect:
                 min(fh, int(ys.max()) + pad))
 
     # ------------------------------------------------------------------
-    def _update_velocity(self, landmarks, h, w):
-        ema = config.RIBBON_VEL_EMA
-        if not landmarks:
-            self._vx    *= ema
-            self._vy    *= ema
-            self._speed *= ema
-            return
-        xs = [lm.x * w for hand in landmarks for lm in hand]
-        ys = [lm.y * h for hand in landmarks for lm in hand]
-        cx, cy = float(np.mean(xs)), float(np.mean(ys))
-        if self._prev_cx is not None:
-            raw_vx = cx - self._prev_cx
-            raw_vy = cy - self._prev_cy
-            self._vx = self._vx * ema + raw_vx * (1.0 - ema)
-            self._vy = self._vy * ema + raw_vy * (1.0 - ema)
-            raw_speed = math.sqrt(self._vx ** 2 + self._vy ** 2)
-            effective = max(0.0, raw_speed - config.RIBBON_DEAD_ZONE)
-            self._speed = min(1.0, effective / max(0.1, config.RIBBON_SPEED_MAX))
-        self._prev_cx, self._prev_cy = cx, cy
-
-    # ------------------------------------------------------------------
     def apply(self, frame, mask, landmarks):
         h, w = frame.shape[:2]
-        self._update_velocity(landmarks, h, w)
 
         if mask is None or not np.any(mask):
             if self._near is not None:
@@ -644,7 +626,7 @@ class RibbonWarpEffect:
             return frame
 
         self._t += 0.055
-        spd = self._speed
+        spd = motion.state.speed
         vs  = config.RIBBON_VEL_SCALE
 
         # ---- ParÃ¢metros reativos Ã  velocidade ----
@@ -655,9 +637,8 @@ class RibbonWarpEffect:
         far_split  = config.RIBBON_RGB_SPLIT * 0.45 * (1.0 + spd * vs * 1.8)
         intens     = config.RIBBON_INTENSITY * (1.0 + spd * vs * 0.5)
 
-        # ---- Vetor direcional ----
-        raw_speed = math.sqrt(self._vx ** 2 + self._vy ** 2) + 1e-6
-        ndx, ndy  = self._vx / raw_speed, self._vy / raw_speed
+        # ---- Vetor direcional (via motion.state) ----
+        ndx, ndy  = motion.state.nx, motion.state.ny
         dir_str   = spd * vs
 
         # ---- Init/reinit buffers ----
@@ -681,105 +662,129 @@ class RibbonWarpEffect:
         self._far        = self._far        * far_decay  + current * mask_3 * (1.0 - far_decay)
         self._far_alpha  = np.clip(self._far_alpha  * far_decay  + mask_roi * (1.0 - far_decay),  0.0, 1.0)
 
-        # ---- Wave maps com fases independentes por camada ----
-        gx, gy = np.meshgrid(np.arange(rw, dtype=np.float32),
-                              np.arange(rh, dtype=np.float32))
+        # ---- Wave maps em half-res: 4x menos pixels, mesma freq visual ----
         t    = self._t
         freq = config.RIBBON_WAVE_FREQ
         drag = amp * dir_str * 1.5
-
-        # Near: fase 0 â€” drag leve
-        dx_n = (amp       * np.sin(gy * freq               + t * 2.3) +
-                amp * 0.4 * np.cos(gx * freq * 0.72        + t * 3.1) +
-                amp * 0.2 * np.sin((gx + gy) * freq * 0.5  + t * 1.7)) + (-ndx * drag * 0.6)
-        dy_n = (amp       * np.cos(gx * freq               + t * 1.8) +
-                amp * 0.4 * np.sin(gy * freq * 0.85        + t * 2.5) +
-                amp * 0.2 * np.cos((gx - gy) * freq * 0.4  + t * 2.9)) + (-ndy * drag * 0.6)
-
-        # Far: fase Ï€/2 + separaÃ§Ã£o extra â€” drag forte + layer offset
         sep  = config.RIBBON_LAYER_SEP * dir_str
-        dx_f = (amp       * np.sin(gy * freq               + t * 2.3 + 1.57) +
-                amp * 0.4 * np.cos(gx * freq * 0.72        + t * 3.1 + 1.05) +
-                amp * 0.2 * np.sin((gx + gy) * freq * 0.5  + t * 1.7 + 2.09)) + (-ndx * (drag + sep))
-        dy_f = (amp       * np.cos(gx * freq               + t * 1.8 + 0.79) +
-                amp * 0.4 * np.sin(gy * freq * 0.85        + t * 2.5 + 1.57) +
-                amp * 0.2 * np.cos((gx - gy) * freq * 0.4  + t * 2.9 + 0.52)) + (-ndy * (drag + sep))
 
-        # ---- Helper: remap com RGB split direcional ----
-        def _remap_split(layer_u8, wdx, wdy, split, nd_x, nd_y, d_str):
-            b_ch, g_ch, r_ch = cv2.split(layer_u8)
+        rw2 = max(8, rw // 2)
+        rh2 = max(8, rh // 2)
+        gxh, gyh = np.meshgrid(np.arange(rw2, dtype=np.float32),
+                               np.arange(rh2, dtype=np.float32))
+        freq2 = freq * 2    # coordenadas half-res -> dobrar freq para manter periodo visual
+        amp2  = amp  * 0.5  # deslocamentos em pixels half-res
+        drag2 = drag * 0.5
+        sep2  = sep  * 0.5
+
+        dx_n = (amp2       * np.sin(gyh * freq2               + t * 2.3) +
+                amp2 * 0.4 * np.cos(gxh * freq2 * 0.72        + t * 3.1) +
+                amp2 * 0.2 * np.sin((gxh + gyh) * freq2 * 0.5 + t * 1.7)) + (-ndx * drag2 * 0.6)
+        dy_n = (amp2       * np.cos(gxh * freq2               + t * 1.8) +
+                amp2 * 0.4 * np.sin(gyh * freq2 * 0.85        + t * 2.5) +
+                amp2 * 0.2 * np.cos((gxh - gyh) * freq2 * 0.4 + t * 2.9)) + (-ndy * drag2 * 0.6)
+
+        dx_f = (amp2       * np.sin(gyh * freq2               + t * 2.3 + 1.57) +
+                amp2 * 0.4 * np.cos(gxh * freq2 * 0.72        + t * 3.1 + 1.05) +
+                amp2 * 0.2 * np.sin((gxh + gyh) * freq2 * 0.5 + t * 1.7 + 2.09)) + (-ndx * (drag2 + sep2))
+        dy_f = (amp2       * np.cos(gxh * freq2               + t * 1.8 + 0.79) +
+                amp2 * 0.4 * np.sin(gyh * freq2 * 0.85        + t * 2.5 + 1.57) +
+                amp2 * 0.2 * np.cos((gxh - gyh) * freq2 * 0.4 + t * 2.9 + 0.52)) + (-ndy * (drag2 + sep2))
+
+        # ---- Remap em half-res (sem upsample interno) ----
+        def _remap_split_h(layer_u8, wdx, wdy, split, nd_x, nd_y, d_str):
+            """Remap em half-res -- retorna half-res para blend posterior."""
+            layer_h = cv2.resize(layer_u8, (rw2, rh2), interpolation=cv2.INTER_LINEAR)
+            b_ch, g_ch, r_ch = cv2.split(layer_h)
+            sp = split * 0.5  # rgb split em pixels half-res
             base_s = 1.0 - d_str
-            rx = split * ( nd_x * d_str + base_s)
-            ry = split *   nd_y * d_str
-            bx = split * (-nd_x * d_str - base_s)
-            by = split * (-nd_y * d_str)
+            rx = sp * ( nd_x * d_str + base_s)
+            ry = sp *   nd_y * d_str
+            bx = sp * (-nd_x * d_str - base_s)
+            by = sp * (-nd_y * d_str)
 
             def _rc(ch, ex, ey):
-                mx = np.clip(gx + wdx + ex, 0, rw - 1).astype(np.float32)
-                my = np.clip(gy + wdy + ey, 0, rh - 1).astype(np.float32)
+                mx = np.clip(gxh + wdx + ex, 0, rw2 - 1).astype(np.float32)
+                my = np.clip(gyh + wdy + ey, 0, rh2 - 1).astype(np.float32)
                 return cv2.remap(ch, mx, my, cv2.INTER_LINEAR,
                                  borderMode=cv2.BORDER_REFLECT)
 
             return cv2.merge([_rc(b_ch, bx, by), _rc(g_ch, 0, 0), _rc(r_ch, rx, ry)])
 
-        # ---- Near: tint quente ----
-        near_u8   = np.clip(self._near, 0, 255).astype(np.uint8)
-        near_dist = _remap_split(near_u8, dx_n, dy_n,
-                                 near_split, ndx, ndy, dir_str).astype(np.float32)
-        nt = config.RIBBON_NEAR_TINT          # (B_scale, G_scale, R_scale)
-        near_dist[:, :, 0] *= nt[0]
-        near_dist[:, :, 1] *= nt[1]
-        near_dist[:, :, 2] *= nt[2]
-        near_dist = np.clip(near_dist, 0, 255)
+        # ---- Near: tint quente (em half-res) ----
+        near_u8     = np.clip(self._near, 0, 255).astype(np.uint8)
+        near_dist_h = _remap_split_h(near_u8, dx_n, dy_n,
+                                     near_split, ndx, ndy, dir_str).astype(np.float32)
+        nt = config.RIBBON_NEAR_TINT
+        near_dist_h[:, :, 0] *= nt[0]
+        near_dist_h[:, :, 1] *= nt[1]
+        near_dist_h[:, :, 2] *= nt[2]
+        near_dist_h = np.clip(near_dist_h, 0, 255)
 
-        # ---- Far: tint frio ----
-        far_u8   = np.clip(self._far, 0, 255).astype(np.uint8)
-        far_dist = _remap_split(far_u8, dx_f, dy_f,
-                                far_split, ndx, ndy, dir_str).astype(np.float32)
-        ft = config.RIBBON_FAR_TINT           # (B_scale, G_scale, R_scale)
-        far_dist[:, :, 0] *= ft[0]
-        far_dist[:, :, 1] *= ft[1]
-        far_dist[:, :, 2] *= ft[2]
-        far_dist = np.clip(far_dist, 0, 255)
+        # ---- Far: tint frio (em half-res) ----
+        far_u8     = np.clip(self._far, 0, 255).astype(np.uint8)
+        far_dist_h = _remap_split_h(far_u8, dx_f, dy_f,
+                                    far_split, ndx, ndy, dir_str).astype(np.float32)
+        ft = config.RIBBON_FAR_TINT
+        far_dist_h[:, :, 0] *= ft[0]
+        far_dist_h[:, :, 1] *= ft[1]
+        far_dist_h[:, :, 2] *= ft[2]
+        far_dist_h = np.clip(far_dist_h, 0, 255)
 
-        # ---- Screen blend: near + far â†’ composite luminoso ----
-        near_n    = near_dist / 255.0
-        far_n     = far_dist  / 255.0
-        composite = np.clip(1.0 - (1.0 - near_n) * (1.0 - far_n), 0.0, 1.0)
+        # ---- Screen blend em half-res (4x mais rapido) ----
+        near_n_h    = near_dist_h / 255.0
+        far_n_h     = far_dist_h  / 255.0
+        composite_h = np.clip(1.0 - (1.0 - near_n_h) * (1.0 - far_n_h), 0.0, 1.0)
 
-        # Alpha das camadas via screen
-        near_a3 = np.clip(self._near_alpha * intens,        0.0, 1.0)[:, :, np.newaxis]
-        far_a3  = np.clip(self._far_alpha  * intens * 0.72, 0.0, 1.0)[:, :, np.newaxis]
-        alpha_3 = np.clip(1.0 - (1.0 - near_a3) * (1.0 - far_a3), 0.0, 1.0)
+        # Alpha maps reduzidos a half-res
+        near_a_h = cv2.resize(np.clip(self._near_alpha * intens,        0.0, 1.0).astype(np.float32),
+                              (rw2, rh2), interpolation=cv2.INTER_LINEAR)
+        far_a_h  = cv2.resize(np.clip(self._far_alpha  * intens * 0.72, 0.0, 1.0).astype(np.float32),
+                              (rw2, rh2), interpolation=cv2.INTER_LINEAR)
+        near_a3_h = near_a_h[:, :, np.newaxis]
+        far_a3_h  = far_a_h[:, :, np.newaxis]
+        alpha_3_h = np.clip(1.0 - (1.0 - near_a3_h) * (1.0 - far_a3_h), 0.0, 1.0)
 
-        # ---- Alpha blend composite sobre o frame ----
-        result   = frame.copy()
-        orig_roi = result[y1:y2, x1:x2].astype(np.float32) / 255.0
-        blended  = orig_roi * (1.0 - alpha_3) + composite * alpha_3
-        result[y1:y2, x1:x2] = np.clip(blended * 255, 0, 255).astype(np.uint8)
+        # ---- Alpha blend em half-res + upsample unico para o frame ----
+        orig_h   = cv2.resize(frame[y1:y2, x1:x2], (rw2, rh2),
+                              interpolation=cv2.INTER_LINEAR).astype(np.float32) / 255.0
+        blended_h = orig_h * (1.0 - alpha_3_h) + composite_h * alpha_3_h
+        frame[y1:y2, x1:x2] = cv2.resize(
+            np.clip(blended_h * 255, 0, 255).astype(np.uint8),
+            (rw, rh), interpolation=cv2.INTER_LINEAR)
+        result = frame
 
         # ---- Glow bloom sobre o composite ----
         if config.RIBBON_GLOW > 0:
             glow_int  = config.RIBBON_GLOW * (1.0 + spd * vs * 1.2)
-            luminance = composite.mean(axis=2)
-            hot       = (luminance > 0.18).astype(np.float32)
-            glow_src  = np.clip(composite * hot[:, :, np.newaxis] * alpha_3 * 255,
-                                0, 255).astype(np.uint8)
-            glow_full = np.zeros_like(frame, dtype=np.uint8)
-            glow_full[y1:y2, x1:x2] = glow_src
+            # Fonte de glow a partir do composite half-res (upsampled)
+            composite  = cv2.resize(composite_h, (rw, rh), interpolation=cv2.INTER_LINEAR)
+            alpha_3    = cv2.resize(alpha_3_h[:, :, 0], (rw, rh), interpolation=cv2.INTER_LINEAR)[:, :, np.newaxis]
+            luminance  = composite.mean(axis=2)
+            hot        = (luminance > 0.18).astype(np.float32)
+            glow_src   = np.clip(composite * hot[:, :, np.newaxis] * alpha_3 * 255,
+                                 0, 255).astype(np.uint8)
             gk = config.RIBBON_GLOW_BLUR
             gk = gk if gk % 2 == 1 else gk + 1
-            glow_blur = cv2.GaussianBlur(glow_full, (gk, gk), 0)
-            result = np.clip(
-                result.astype(np.float32) + glow_blur.astype(np.float32) * glow_int,
-                0, 255
-            ).astype(np.uint8)
+            # Glow em ROI com padding -- evita blur no frame completo
+            fh, fw = frame.shape[:2]
+            pad_g = gk // 2 + 2
+            gx0  = max(0, x1 - pad_g); gy0  = max(0, y1 - pad_g)
+            gx1e = min(fw, x2 + pad_g); gy1e = min(fh, y2 + pad_g)
+            glow_roi_buf = np.zeros((gy1e - gy0, gx1e - gx0, 3), dtype=np.uint8)
+            ox, oy = x1 - gx0, y1 - gy0
+            glow_roi_buf[oy:oy + rh, ox:ox + rw] = glow_src
+            glow_blurred = cv2.GaussianBlur(glow_roi_buf, (gk, gk), 0)
+            result[gy0:gy1e, gx0:gx1e] = np.clip(
+                result[gy0:gy1e, gx0:gx1e].astype(np.float32) +
+                glow_blurred.astype(np.float32) * glow_int,
+                0, 255).astype(np.uint8)
 
         # ---- Scanline overlay â€” textura CRT sobre a ROI ----
         if config.RIBBON_SCANLINES > 0:
-            scan_roi = result[y1:y2, x1:x2].astype(np.float32)
-            scan_roi[::2, :] *= (1.0 - config.RIBBON_SCANLINES)
-            result[y1:y2, x1:x2] = np.clip(scan_roi, 0, 255).astype(np.uint8)
+            # Scanlines em uint8 direto -- sem conversao float
+            result[y1:y2:2, x1:x2] = cv2.convertScaleAbs(
+                result[y1:y2:2, x1:x2], alpha=1.0 - config.RIBBON_SCANLINES)
 
         return result
 
@@ -799,48 +804,32 @@ class TrackingOverlayEffect:
     - Fingertips: pontos maiores com cores distintas por dedo
     """
 
-    # Pontas de dedo: cor BGR distinta por dedo
-    _TIP_COLORS = {
-        4:  (0,   140, 255),   # polegar  â€” laranja
-        8:  (0,   230, 255),   # indicador â€” amarelo
-        12: (60,  255, 120),   # mÃ©dio     â€” verde-claro
-        16: (240, 100,  50),   # anelar    â€” azul
-        20: (220,  50, 240),   # mÃ­nimo    â€” magenta
-    }
-    _TIPS = frozenset(_TIP_COLORS.keys())
+    # Visual minimalista: cor unica branca, linhas finas, sem distincao por dedo
+    _LINE_COLOR  = (220, 220, 220)   # branco suave
+    _JOINT_COLOR = (180, 180, 180)   # cinza claro para nos
+    _LINE_ALPHA  = 0.35              # opacidade global do overlay
 
     def apply(self, frame, mask, landmarks):
         if not landmarks:
             return frame
 
-        result = frame.copy()
-        h, w   = frame.shape[:2]
-
-        # ---- Hull outline (contorno da mÃ£o) ----
-        if mask is not None and np.any(mask):
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
-                                           cv2.CHAIN_APPROX_SIMPLE)
-            cv2.drawContours(result, contours, -1, (80, 255, 200), 1, cv2.LINE_AA)
+        h, w    = frame.shape[:2]
+        overlay = frame.copy()
 
         for hand_lms in landmarks:
             pts = [(int(lm.x * w), int(lm.y * h)) for lm in hand_lms]
 
-            # ---- Linhas do skeleton ----
+            # ---- Linhas do skeleton -- brancas, espessura 1 ----
             for s, e in HAND_CONNECTIONS:
-                cv2.line(result, pts[s], pts[e], (40, 200, 55), 2, cv2.LINE_AA)
+                cv2.line(overlay, pts[s], pts[e], self._LINE_COLOR, 1, cv2.LINE_AA)
 
-            # ---- Joints intermediÃ¡rios ----
-            for i, pt in enumerate(pts):
-                if i not in self._TIPS:
-                    cv2.circle(result, pt, 4, (210, 210, 210), -1, cv2.LINE_AA)
-                    cv2.circle(result, pt, 5, (70,  70,  70),   1, cv2.LINE_AA)
+            # ---- Pontos pequenos em todos os nos (sem destaque por dedo) ----
+            for pt in pts:
+                cv2.circle(overlay, pt, 2, self._JOINT_COLOR, -1, cv2.LINE_AA)
 
-            # ---- Fingertips com cor por dedo ----
-            for idx, color in self._TIP_COLORS.items():
-                cv2.circle(result, pts[idx], 9, color,           -1, cv2.LINE_AA)
-                cv2.circle(result, pts[idx], 9, (255, 255, 255),  2, cv2.LINE_AA)
-
-        return result
+        # Blend com frame original para opacidade reduzida
+        cv2.addWeighted(overlay, self._LINE_ALPHA, frame, 1.0 - self._LINE_ALPHA, 0, dst=frame)
+        return frame
 
 
 # ---------------------------------------------------------------------------

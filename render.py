@@ -79,8 +79,8 @@ class Renderer:
                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1, cv2.LINE_AA,
             )
 
-        if config.SHOW_ACTIVE_EFFECT_NAME:
-            effect_label = active_effect if active_effect else "off"
+        if config.SHOW_ACTIVE_EFFECT_NAME and active_effect is not None:
+            effect_label = active_effect
             cv2.putText(
                 output, effect_label,
                 (10, output.shape[0] - 15),
@@ -88,6 +88,44 @@ class Renderer:
             )
 
         cv2.imshow(config.WINDOW_NAME, output)
+
+    def draw_pip_webcam(self, frame, webcam_frame):
+        """
+        Incrusta o frame da webcam como PiP (picture-in-picture) no frame destino.
+
+        Posição controlada por config.PRESENTATION_WEBCAM_POS:
+            "bottom_right" | "bottom_left" | "top_right" | "top_left"
+        Tamanho controlado por config.PRESENTATION_WEBCAM_SCALE (fração da largura).
+        """
+        if webcam_frame is None:
+            return
+        fh, fw = frame.shape[:2]
+        scale  = config.PRESENTATION_WEBCAM_SCALE
+        pip_w  = int(fw * scale)
+        pip_h  = int(fh * scale)
+        pip    = cv2.resize(webcam_frame, (pip_w, pip_h), interpolation=cv2.INTER_LINEAR)
+
+        margin = 12
+        pos    = config.PRESENTATION_WEBCAM_POS
+        if pos == "bottom_right":
+            x1, y1 = fw - pip_w - margin, fh - pip_h - margin
+        elif pos == "bottom_left":
+            x1, y1 = margin, fh - pip_h - margin
+        elif pos == "top_right":
+            x1, y1 = fw - pip_w - margin, margin
+        else:  # top_left
+            x1, y1 = margin, margin
+
+        # Clamp para não sair do frame
+        x1 = max(0, x1)
+        y1 = max(0, y1)
+        x2 = min(fw, x1 + pip_w)
+        y2 = min(fh, y1 + pip_h)
+        pip = pip[: y2 - y1, : x2 - x1]
+
+        # Borda fina para delimitar o PiP
+        cv2.rectangle(pip, (0, 0), (pip.shape[1] - 1, pip.shape[0] - 1), (60, 60, 60), 1)
+        frame[y1:y2, x1:x2] = pip
 
     def should_quit(self, wait_ms=1):
         return cv2.waitKey(wait_ms) & 0xFF == ord("q")

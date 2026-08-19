@@ -11,8 +11,8 @@ from camera import CameraCapture
 from screen import ScreenCapture
 from tracking import HandTracker, BodySegmenter
 from render import Renderer
-from effects import GlitchEffect, DistortionEffect, DisplacementEffect, AuraEffect, TrailEffect, FireEffect, OrganicWarpEffect, RibbonWarpEffect, TrackingOverlayEffect, HUDBehindEffect, PalmRingEffect, FloatingOrbEffect, FloatingCubeEffect
-from gestures import GestureDetector
+from effects import FloatingOrbEffect, FloatingCubeEffect, FloatingTriangleEffect
+from gestures import GestureDetector, detect_thumb_pinky_closed, detect_thumb_middle_pinch, detect_index_thumb_pinch, detect_thumb_ring_pinch, get_pinch_point
 from coords import remap_landmarks, make_hand_mask, warp_cam_to_screen, warp_mask_to_screen
 import motion
 
@@ -22,19 +22,9 @@ logging.basicConfig(
 )
 
 _EFFECTS = {
-    "glitch":       GlitchEffect(),
-    "tracking":     TrackingOverlayEffect(),
-    "distortion":   DistortionEffect(),
-    "displacement": DisplacementEffect(),
-    "aura":         AuraEffect(),
-    "trail":        TrailEffect(),
-    "fire":         FireEffect(),
-    "organic":      OrganicWarpEffect(),
-    "ribbon":       RibbonWarpEffect(),
-    "hud":          HUDBehindEffect(),
-    "palm_ring":    PalmRingEffect(),
-    "orb":          FloatingOrbEffect(),
-    "cube":         FloatingCubeEffect(),
+    "orb":      FloatingOrbEffect(),
+    "cube":     FloatingCubeEffect(),
+    "triangle": FloatingTriangleEffect(),
 }
 
 logger = logging.getLogger(__name__)
@@ -58,12 +48,26 @@ def main():
     gesture_detector = GestureDetector()
     active_key = config.ACTIVE_EFFECT
     effect = _EFFECTS.get(active_key)
+    # --- Estado do gesto thumb+pinky para bounce ---
+    _thumb_pinky_prev    = False   # estado anterior do gesto (borda de entrada)
+    _thumb_pinky_cd      = 0      # cooldown em frames
+    # --- Estado do gesto thumb+middle para toggle de landmarks ---
+    _thumb_middle_prev   = False
+    _thumb_middle_cd     = 0
+    # --- Estado do controle de escala por duas maos ---
+    _two_hand_scale_active = False
+    _two_hand_base_dist    = None
+    _two_hand_init_scale   = 1.0
+    _two_hand_scale_prev   = 1.0
+    # --- Estado do gesto thumb+ring para ativar triangle ---
+    _thumb_ring_prev     = False
+    _thumb_ring_cd       = 0
 
     if not camera.open():
         return
 
     logger.info(
-        "Efeito ativo: %s  |  1=glitch  2=tracking  3=distortion  4=displacement  5=aura  6=trail  7=fire  8=organic  9=ribbon  h=hud  r=palm_ring  o=orb  c=cube  0=off",
+        "Efeito ativo: %s  |  o=orb  c=cube  0=off",
         active_key,
     )
 
@@ -82,13 +86,86 @@ def main():
 
             # --- Detecção de gesto (antes do render, sem custo) ---
             gesture_events = gesture_detector.update(tracker.landmarks)
-            for evt in gesture_events:
-                if evt == 'pinch':
-                    active_key = _next_effect(active_key, config.GESTURE_EFFECT_CYCLE)
-                    effect = _EFFECTS.get(active_key)
-                    logger.info("Gesto pinch: efeito -> %s", active_key)
+            # (evento 'pinch' thumb+index reservado para feedback visual — não controla landmarks)
+            _ = gesture_events
 
-            mask = tracker.get_mask(h, w)
+            # --- Gesto thumb + middle: toggle de landmarks ---
+            if config.LANDMARK_GESTURE_CONTROL and tracker.has_detections():
+                _thumb_middle_now = detect_thumb_middle_pinch(tracker.landmarks[0])
+                if _thumb_middle_cd > 0:
+                    _thumb_middle_cd -= 1
+                elif _thumb_middle_now and not _thumb_middle_prev:
+                    config.SHOW_HAND_LANDMARKS = not config.SHOW_HAND_LANDMARKS
+                    logger.info("Thumb+middle: landmarks -> %s",
+                                "on" if config.SHOW_HAND_LANDMARKS else "off")
+                    _thumb_middle_cd = config.LANDMARK_THUMB_MIDDLE_COOLDOWN_FRAMES
+                _thumb_middle_prev = _thumb_middle_now
+            else:
+                _thumb_middle_prev = False
+            # --- Gesto thumb + pinky: bounce do cubo ---
+            if active_key == "cube" and tracker.has_detections():
+                _thumb_pinky_now = detect_thumb_pinky_closed(tracker.landmarks[0])
+                if _thumb_pinky_cd > 0:
+                    _thumb_pinky_cd -= 1
+                elif _thumb_pinky_now and not _thumb_pinky_prev:
+                    # borda de entrada: gesto acabou de fechar
+                    cube_effect = _EFFECTS.get("cube")
+                    if cube_effect is not None:
+                        cube_effect.trigger_bounce_sequence()
+                        logger.info("Thumb+pinky: bounce disparado")
+                    _thumb_pinky_cd = config.CUBE_THUMB_PINKY_COOLDOWN_FRAMES
+                _thumb_pinky_prev = _thumb_pinky_now
+            else:
+                _thumb_pinky_prev = False
+
+            # --- Gesto thumb + ring: ativar FloatingTriangleEffect ---
+            if config.TRIANGLE_THUMB_RING_GESTURE_ENABLED and tracker.has_detections():
+                _thumb_ring_now = detect_thumb_ring_pinch(tracker.landmarks[0])
+                if _thumb_ring_cd > 0:
+                    _thumb_ring_cd -= 1
+                elif _thumb_ring_now and not _thumb_ring_prev:
+                    if active_key != "triangle":
+                        active_key = "triangle"
+                        effect     = _EFFECTS.get("triangle")
+                        config.SHOW_HAND_LANDMARKS = False
+                        logger.info("Thumb+ring: triangle ativado")
+                    _thumb_ring_cd = config.TRIANGLE_THUMB_RING_COOLDOWN_FRAMES
+                _thumb_ring_prev = _thumb_ring_now
+            else:
+                _thumb_ring_prev = False
+
+            # --- Controle de escala por duas maos (pinch indicador + polegar) ---
+            _cube_fx = _EFFECTS.get("cube")
+            if (active_key == "cube" and config.TWO_HAND_CUBE_SCALE_ENABLED
+                    and len(tracker.landmarks) >= 2 and _cube_fx is not None):
+                lm0, lm1 = tracker.landmarks[0], tracker.landmarks[1]
+                if detect_index_thumb_pinch(lm0) and detect_index_thumb_pinch(lm1):
+                    pp0 = get_pinch_point(lm0, w, h)
+                    pp1 = get_pinch_point(lm1, w, h)
+                    raw_dist = ((pp1[0] - pp0[0]) ** 2 + (pp1[1] - pp0[1]) ** 2) ** 0.5
+                    if not _two_hand_scale_active:
+                        _two_hand_scale_active = True
+                        _two_hand_base_dist    = max(1.0, raw_dist)
+                        _two_hand_init_scale   = _cube_fx._scale
+                        _two_hand_scale_prev   = _cube_fx._scale
+                    ratio    = raw_dist / _two_hand_base_dist
+                    raw_s    = max(config.TWO_HAND_CUBE_MIN_SCALE,
+                                   min(config.TWO_HAND_CUBE_MAX_SCALE,
+                                       _two_hand_init_scale * ratio))
+                    if abs(raw_s - _two_hand_scale_prev) >= config.TWO_HAND_CUBE_DEAD_ZONE:
+                        _cube_fx.set_scale(raw_s)
+                        _two_hand_scale_prev = raw_s
+                else:
+                    if _two_hand_scale_active:
+                        _cube_fx.freeze_scale()
+                        _two_hand_scale_active = False
+                        _two_hand_base_dist    = None
+            else:
+                if _two_hand_scale_active and _cube_fx is not None:
+                    _cube_fx.freeze_scale()
+                _two_hand_scale_active = False
+                _two_hand_base_dist    = None
+            mask  = tracker.get_mask(h, w)
             boxes = tracker.get_bounding_boxes(h, w)
 
             if effect is not None:
@@ -102,7 +179,7 @@ def main():
 
             if tracker.has_detections():
                 show_lm = config.SHOW_LANDMARKS and (show_debug or active_key not in config.INTENSE_EFFECTS)
-                if show_lm:
+                if show_lm or config.SHOW_HAND_LANDMARKS:
                     renderer.draw_landmarks(frame, tracker.landmarks)
 
             # --- Indicador visual de pinch (leve, desenhado direto no frame) ---
@@ -131,9 +208,18 @@ def main():
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
                 break
+            if key == ord("l") or key == ord("L"):
+                config.SHOW_HAND_LANDMARKS = not config.SHOW_HAND_LANDMARKS
+                logger.info("Landmarks da mão: %s", "on" if config.SHOW_HAND_LANDMARKS else "off")
             if key in config.EFFECT_KEYS:
                 active_key = config.EFFECT_KEYS[key]
                 effect = _EFFECTS.get(active_key)
+                if active_key == "cube":
+                    config.SHOW_HAND_LANDMARKS = False
+                    logger.info("Cube ativado: landmarks desligadas automaticamente")
+                if active_key == "triangle":
+                    config.SHOW_HAND_LANDMARKS = False
+                    logger.info("Triangle ativado: landmarks desligadas automaticamente")
                 logger.info("Efeito alterado para: %s", active_key)
 
     finally:

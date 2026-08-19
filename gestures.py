@@ -144,3 +144,140 @@ class GestureDetector:
         if hand_size < 1e-5:
             return 1.0
         return pinch_d / hand_size
+
+
+# ---------------------------------------------------------------------------
+# Detecção estacionária do gesto thumb + pinky (sem máquina de estados).
+# Retorna True se THUMB_TIP estiver suficientemente perto de PINKY_TIP.
+# Normaliza pela largura da mão (wrist → mid_base) para ser invariante à
+# distância da câmera.
+#
+# Índices MediaPipe:
+#   lm[0]  = pulso (wrist)
+#   lm[4]  = ponta do polegar (thumb tip)
+#   lm[9]  = base do médio (referência de tamanho da mão)
+#   lm[20] = ponta do mindinho (pinky tip)
+# ---------------------------------------------------------------------------
+
+def detect_thumb_pinky_closed(hand_lm):
+    """Retorna True se thumb_tip e pinky_tip estiverem próximos (gesto fechado).
+
+    Usa CUBE_THUMB_PINKY_THRESHOLD de config.py.
+    Normaliza pela distância wrist→mid_base para ser invariante à câmera.
+    """
+    if not config.CUBE_THUMB_PINKY_GESTURE_ENABLED:
+        return False
+
+    tx, ty = hand_lm[4].x,  hand_lm[4].y   # thumb tip
+    px, py = hand_lm[20].x, hand_lm[20].y   # pinky tip
+    dist   = math.hypot(tx - px, ty - py)
+
+    wx, wy = hand_lm[0].x, hand_lm[0].y
+    mx, my = hand_lm[9].x, hand_lm[9].y
+    hand_size = math.hypot(mx - wx, my - wy)
+
+    if hand_size < 1e-5:
+        return False
+    return (dist / hand_size) < config.CUBE_THUMB_PINKY_THRESHOLD
+
+
+# ---------------------------------------------------------------------------
+# Deteção de pinch indicador + polegar (cada mão individualmente).
+# Usado para controle de escala por duas mãos no FloatingCubeEffect.
+#
+# Índices MediaPipe:
+#   lm[0]  = pulso (wrist)
+#   lm[4]  = ponta do polegar (thumb tip)
+#   lm[8]  = ponta do indicador (index tip)
+#   lm[9]  = base do médio (referência de tamanho da mão)
+# ---------------------------------------------------------------------------
+
+def detect_index_thumb_pinch(hand_lm):
+    """Retorna True se thumb_tip e index_tip estiverem próximos.
+
+    Usa TWO_HAND_CUBE_PINCH_THRESHOLD de config.py.
+    Normaliza pela distância wrist→mid_base.
+    """
+    tx, ty = hand_lm[4].x, hand_lm[4].y   # thumb tip
+    ix, iy = hand_lm[8].x, hand_lm[8].y   # index tip
+    dist   = math.hypot(tx - ix, ty - iy)
+
+    wx, wy   = hand_lm[0].x, hand_lm[0].y
+    bx, by   = hand_lm[9].x, hand_lm[9].y
+    hand_size = math.hypot(bx - wx, by - wy)
+
+    if hand_size < 1e-5:
+        return False
+    return (dist / hand_size) < config.TWO_HAND_CUBE_PINCH_THRESHOLD
+
+
+def get_pinch_point(hand_lm, frame_w, frame_h):
+    """Retorna (x, y) ponto médio entre thumb_tip e index_tip em pixels."""
+    tx = hand_lm[4].x * frame_w
+    ty = hand_lm[4].y * frame_h
+    ix = hand_lm[8].x * frame_w
+    iy = hand_lm[8].y * frame_h
+    return ((tx + ix) * 0.5, (ty + iy) * 0.5)
+
+
+# ---------------------------------------------------------------------------
+# Deteção estacionária do gesto thumb + middle (sem máquina de estados).
+# Usado para toggle das landmarks da mão.
+#
+# Índices MediaPipe:
+#   lm[0]  = pulso (wrist)
+#   lm[4]  = ponta do polegar (thumb tip)
+#   lm[9]  = base do médio (referência de tamanho da mão)
+#   lm[12] = ponta do dedo médio (middle finger tip)
+# ---------------------------------------------------------------------------
+
+def detect_thumb_middle_pinch(hand_lm):
+    """Retorna True se thumb_tip e middle_tip estiverem próximos.
+
+    Usa LANDMARK_THUMB_MIDDLE_THRESHOLD de config.py.
+    Normaliza pela distância wrist→mid_base para ser invariante à câmera.
+    """
+    tx, ty = hand_lm[4].x,  hand_lm[4].y   # thumb tip
+    mx, my = hand_lm[12].x, hand_lm[12].y  # middle finger tip
+    dist   = math.hypot(tx - mx, ty - my)
+
+    wx, wy   = hand_lm[0].x, hand_lm[0].y
+    bx, by   = hand_lm[9].x, hand_lm[9].y
+    hand_size = math.hypot(bx - wx, by - wy)
+
+    if hand_size < 1e-5:
+        return False
+    return (dist / hand_size) < config.LANDMARK_THUMB_MIDDLE_THRESHOLD
+
+
+# ---------------------------------------------------------------------------
+# Detecção do gesto thumb + ring finger (polegar + anelar).
+# Ativa o FloatingTriangleEffect.
+#
+# Índices MediaPipe:
+#   lm[0]  = pulso (wrist)
+#   lm[4]  = ponta do polegar (thumb tip)
+#   lm[9]  = base do médio (referência de tamanho da mão)
+#   lm[16] = ponta do anelar (ring finger tip)
+# ---------------------------------------------------------------------------
+
+def detect_thumb_ring_pinch(hand_lm):
+    """Retorna True se thumb_tip e ring_tip estiverem próximos.
+
+    Usa TRIANGLE_THUMB_RING_THRESHOLD de config.py.
+    Normaliza pela distância wrist→mid_base para ser invariante à câmera.
+    """
+    if not config.TRIANGLE_THUMB_RING_GESTURE_ENABLED:
+        return False
+
+    tx, ty = hand_lm[4].x,  hand_lm[4].y   # thumb tip
+    rx, ry = hand_lm[16].x, hand_lm[16].y  # ring finger tip
+    dist   = math.hypot(tx - rx, ty - ry)
+
+    wx, wy   = hand_lm[0].x, hand_lm[0].y
+    bx, by   = hand_lm[9].x, hand_lm[9].y
+    hand_size = math.hypot(bx - wx, by - wy)
+
+    if hand_size < 1e-5:
+        return False
+    return (dist / hand_size) < config.TRIANGLE_THUMB_RING_THRESHOLD

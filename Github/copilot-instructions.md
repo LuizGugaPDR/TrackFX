@@ -605,3 +605,83 @@ FLOATING_CUBE_TWO_HAND_SCALE        # influência da distância entre mãos
 - **Explode**: cubo "estoura" em arestas separadas em burst de accel alto
 - **Two-hand full**: centro entre mãos controla posição; distância controla escala
 - **Integração OSC**: enviar rotação/escala/energia para TouchDesigner
+
+---
+
+# FLOATINGTRIANGLEEFFECT — TETRAEDRO HOLOGRÁFICO FLUTUANTE
+
+## Objetivo
+
+Tetraedro (pirâmide triangular) wireframe holográfico flutuante.
+Visual idêntico ao FloatingCubeEffect: núcleo branco, halo ciano, faces translúcidas,
+glow duplo, trail, pulsação.
+
+## Ativação
+
+- Tecla: `t` / `T`
+- Gesto: polegar + anelar (`detect_thumb_ring_pinch`, lm[4] ↔ lm[16])
+- Limiar: `TRIANGLE_THUMB_RING_THRESHOLD` (normalizado por wrist→mid_base)
+- Cooldown: `TRIANGLE_THUMB_RING_COOLDOWN_FRAMES`
+
+## Estrutura 3D
+
+- 4 vértices: base triangular equilateral (y=+1, plano XZ) + ápice (y=-1.6)
+- 6 arestas: 3 da base + 3 laterais
+- 4 faces triangulares: 1 base + 3 laterais
+- Rotação ZYX manual (mesma função de cubo)
+- Projeção pseudo-perspectiva manual: `FLOATING_TRIANGLE_PERSPECTIVE_FOV`
+
+## Parâmetros principais em config.py
+
+```
+# Gesto
+TRIANGLE_THUMB_RING_GESTURE_ENABLED
+TRIANGLE_THUMB_RING_THRESHOLD
+TRIANGLE_THUMB_RING_COOLDOWN_FRAMES
+# Geometria
+FLOATING_TRIANGLE_SIZE
+FLOATING_TRIANGLE_MIN_SCALE / MAX_SCALE
+# Visual
+FLOATING_TRIANGLE_CORE_COLOR         # branco puro
+FLOATING_TRIANGLE_GLOW_COLOR         # ciano-laranja suave
+FLOATING_TRIANGLE_BACK_DESATURATE
+FLOATING_TRIANGLE_FRONT/BACK_ALPHA
+FLOATING_TRIANGLE_FRONT/BACK_THICKNESS
+FLOATING_TRIANGLE_HALO_ALPHA / HALO_THICKNESS
+FLOATING_TRIANGLE_GLOW_INTENSITY / GLOW_BLUR
+FLOATING_TRIANGLE_GLOW2_INTENSITY / GLOW2_BLUR
+FLOATING_TRIANGLE_PULSE_SPEED / PULSE_INTENSITY
+FLOATING_TRIANGLE_TRAIL_DECAY
+FLOATING_TRIANGLE_FACE_COLOR / FACE_ALPHA
+# Posição e rotação
+FLOATING_TRIANGLE_IDLE_ROTATION_X/Y/Z
+FLOATING_TRIANGLE_POSITION_SMOOTHING
+FLOATING_TRIANGLE_IDLE_X / IDLE_Y
+FLOATING_TRIANGLE_IDLE_DRIFT_AMP / SPEED
+FLOATING_TRIANGLE_DRIFT_STRENGTH
+FLOATING_TRIANGLE_FADE_SPEED
+FLOATING_TRIANGLE_ROTATION_DAMPING / SMOOTHING
+FLOATING_TRIANGLE_FINGER_ROTATION_X/Y
+# Energia
+FLOATING_TRIANGLE_ENERGY_FROM_SPEED
+FLOATING_TRIANGLE_ACCEL_BURST
+```
+
+## Teclas
+
+- `t` / `T` → FloatingTriangle
+
+## Regras de manutenção
+
+- ROI ao redor dos vértices projetados (não full-frame)
+- Canvas pré-alocado, realloca só quando tamanho muda
+- Trail em buffer local (não afeta frames anteriores)
+- Glow duplo apenas no ROI — nunca full-frame
+- Sem bounce, sem external scale control (diferente do cubo)
+
+## Próximos upgrades possíveis (não implementar sem sprint)
+
+- **Bounce**: trigger bounce ao fechar gesto thumb+ring novamente
+- **Two-hand scale**: distância entre mãos controla escala
+- **Explode**: vértices se separam em accel burst
+- **Integração OSC**: enviar rotação/escala/energia para TouchDesigner

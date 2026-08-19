@@ -24,7 +24,7 @@ class Renderer:
         self._prev_time = now
 
     def draw_landmarks(self, frame, landmarks_list):
-        if not config.SHOW_LANDMARKS or not landmarks_list:
+        if not config.SHOW_HAND_LANDMARKS or not landmarks_list:
             return
         h, w = frame.shape[:2]
         for hand_landmarks in landmarks_list:

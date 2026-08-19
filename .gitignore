@@ -5,3 +5,4 @@ venv/
 .env
 .DS_Store
 *.log
+Github/copilot-instructions.md
